@@ -8,16 +8,21 @@ from json import loads
 from typing import Iterator
 
 from github import Auth, Github
+from jsonschema import ValidationError, validate
 from openai import OpenAI
+from rich.prompt import Prompt
 
 from settings import config
+
+from . import logger
+from .exceptions import DecodeError
+from .utils import SCHEMA, edit_json, formatter
 
 g = Github(auth=Auth.Token(config['secret']['GITHUB_TOKEN']))
 repo = g.get_repo(f'{config["secret"]["OWNER"]}/{config["secret"]["REPO_NAME"]}')
 print(config['secret'])
 client = OpenAI(
-    api_key=config['secret']['llm']['key'],
-    base_url=config['secret']['llm']['server']
+    api_key=config['secret']['llm']['key'], base_url=config['secret']['llm']['server']
 )
 setting = config['settings']
 
@@ -73,7 +78,6 @@ def fetch_issues_and_discussions() -> Iterator[dict]:
             }
 
 
-
 def handle_instruction(instructions: list[str]) -> str:
     for instr in instructions:
         instr = shlex.split(instr)
@@ -89,7 +93,6 @@ CONTENT = """
 编号：{num}
 内容：{text}
 """
-
 
 
 def rate_limit(max_calls: int, per_seconds: float):
@@ -138,6 +141,7 @@ def rate_limit(max_calls: int, per_seconds: float):
 
     return decorator
 
+
 @rate_limit(10, 60)
 def get_llm_response(instructions: str, input: str) -> str:
     return (
@@ -155,8 +159,45 @@ def get_llm_response(instructions: str, input: str) -> str:
 
 def run():
     for post in fetch_issues_and_discussions():
-        print(loads(get_llm_response(setting['prompt_type'], CONTENT.format(**post))) | {'num': post['num']})
+        ret = loads(get_llm_response(setting['prompt_type'], CONTENT.format(**post)))
+        print(ret | {'num': post['num']})
+        try:
+            validate(instance=ret, schema=SCHEMA['type'])
+            ret |= {'num': post['num']}
+        except DecodeError as e:
+            if {'y': False, 'n': True}[
+                Prompt.ask(
+                    '解析出错，是否人工修改？',
+                    default='n',
+                    choices=['n', 'y'],
+                    case_sensitive=False,
+                )
+            ]:
+                corrected = edit_json(ret, SCHEMA['type'])
+                if corrected is not None:
+                    corrected |= {'num': post['num']}
+                    print('修正后的数据：', corrected)
+                else:
+                    print(f'编号 {post["num"]} 验证失败: {e.message}')
+            else:
+                pass
 
 
 if __name__ == '__main__':
-    run()
+    # run()
+    try:
+        instance = {
+            'type': 'alias',
+            'reason': 'rule: found old/new name pattern',
+            'mcp': [],
+        }
+        validate(
+            instance={
+                'type': 'alias',
+                'reason': 'rule: found old/new name pattern',
+                'mcp': [],
+            },
+            schema=SCHEMA['type'],
+        )
+    except ValidationError as e:
+        logger.error(formatter(e, instance))
