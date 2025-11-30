@@ -1,0 +1,1 @@
+^(view(\s+\d+)+|google(\s+[\u4e00-\u9fff]+){2})$

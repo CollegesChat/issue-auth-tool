@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from jsonschema import validate
+from jsonschema import RefResolver, validate
 from jsonschema.exceptions import ValidationError
 from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import FormattedText
@@ -16,6 +16,22 @@ from pygments.lexers.data import JsonLexer
 from . import logger
 
 
+def load_regex(uri: str):
+    # regex://username.regex → username.regex
+    key = uri.replace('regex://', '')
+    path = Path(__file__).parent/ 'schema' / 'regex' / f'{key}'
+    with open(path, 'r', encoding='utf-8') as f:
+        return {"type": "string",'pattern': f.read().strip()}
+
+
+resolver = RefResolver(
+    base_uri='',
+    referrer=None,
+    handlers={
+        'regex': load_regex  # 注册 URI scheme loader
+    },
+)
+
 def formatter(e: ValidationError, instance: dict) -> str:
     return f"""
 JSON: {instance}
@@ -28,7 +44,7 @@ Instance: {e.instance}
 """.lstrip()
 
 
-SCHEMA: dict[str, str] = {
+SCHEMA: dict[str, object] = {
     'judgement': json.loads(
         (Path(__file__).parent / 'schema' / 'judgement.schema.json').read_text()
     ),
@@ -38,13 +54,13 @@ SCHEMA: dict[str, str] = {
 }
 
 
-def edit_json(j: dict, validator: dict) -> None | dict:
+def edit_json(d: dict, validator: dict) -> None | dict:
     """
     打开一个可编辑的 JSON 文本框，初始内容为 j 的漂亮打印。
     - 按 Ctrl-S 保存并退出：返回解析后的 dict（如果 JSON 有误，会打印错误并返回 None）。
     - 按 Esc 或 Ctrl-Q 取消编辑并返回 None。
     """
-    initial_json = json.dumps(j, ensure_ascii=False, indent=2)
+    initial_json = json.dumps(d, ensure_ascii=False, indent=2)
     text_area = TextArea(
         text=initial_json,
         lexer=PygmentsLexer(JsonLexer),
@@ -63,7 +79,7 @@ def edit_json(j: dict, validator: dict) -> None | dict:
     def on_text_changed(buf):
         try:
             parsed = json.loads(buf.text)
-            validate(instance=parsed, schema=validator)
+            validate(instance=parsed, schema=validator, resolver=resolver)
             status_label.text = FormattedText([
                 ('fg:ansigreen', '状态：'),
                 ('fg:ansiwhite', 'JSON 语法正确'),
@@ -71,14 +87,8 @@ def edit_json(j: dict, validator: dict) -> None | dict:
         except Exception as ex:
             # 显示错误（红色），只显示简短信息以免太长
             status_label.text = FormattedText([
-                ('fg:ansired', '状态：'),('fg:ansiwhite', f'JSON 错误: {ex!r}'),
+                ('fg:ansired', '状态：'),('fg:ansiwhite', f'JSON 错误: {repr(ex).replace(r"\\\\","\\")}'),
             ])
-        # 触发重绘（需要 app 实例；用闭包里存的 app）
-        if app_is_running[0]:
-            app.invalidate()
-
-    # 需要一个小技巧让回调里能访问 app：用可变容器占位，稍后赋值
-    app_is_running = [False]
     text_area.buffer.on_text_changed += on_text_changed
     @kb.add('escape')  # Esc 取消
     @kb.add('c-q')  # Ctrl-Q 取消
@@ -103,7 +113,7 @@ def edit_json(j: dict, validator: dict) -> None | dict:
 
     try:
         parsed = json.loads(edited)
-        validate(instance=parsed, schema=validator)
+        validate(instance=parsed, schema=validator, resolver=resolver)
         # console.print(Syntax(json.dumps(parsed, indent=2, ensure_ascii=False),'json',theme='monokai',))
         return parsed
     except ValidationError as e:

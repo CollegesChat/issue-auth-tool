@@ -24,8 +24,7 @@
         "mcp": {
             "type": "array",
             "items": {
-                "type": "string",
-                "pattern": "^(view|google)"
+                "$ref": "regex://type.regex"
             },
             "default": []
         }
