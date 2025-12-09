@@ -1,22 +1,16 @@
 import re
 import shlex
-import threading
-import time
-from collections import deque
-from functools import wraps
 from json import loads
 from typing import Iterator
 
 from github import Auth, Github
-from jsonschema import ValidationError, validate
 from openai import OpenAI
 from rich.prompt import Prompt
 
 from settings import config
 
-from . import logger
 from .exceptions import DecodeError
-from .utils import SCHEMA, edit_json, formatter
+from .utils import SCHEMA, edit_json, rate_limit, validate
 
 g = Github(auth=Auth.Token(config['secret']['GITHUB_TOKEN']))
 repo = g.get_repo(f'{config["secret"]["OWNER"]}/{config["secret"]["REPO_NAME"]}')
@@ -95,54 +89,7 @@ CONTENT = """
 """
 
 
-def rate_limit(max_calls: int, per_seconds: float):
-    """
-    通用限速装饰器：
-    - max_calls：时间窗口内最多调用次数
-    - per_seconds：窗口秒数
-    """
-    calls = deque()
-    lock = threading.Lock()
-
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            with lock:
-                now = time.time()
-                # 清理窗口外的调用记录
-                while calls and now - calls[0] > per_seconds:
-                    calls.popleft()
-
-                # 如果超过限额，等待直到下一次可用
-                if len(calls) >= max_calls:
-                    sleep_for = per_seconds - (now - calls[0])
-                    if sleep_for > 0:
-                        time.sleep(sleep_for)
-                    # 清理已过期
-                    now = time.time()
-                    while calls and now - calls[0] > per_seconds:
-                        calls.popleft()
-
-                calls.append(time.time())
-
-            # 调用目标函数，自动重试 429
-            while True:
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    msg = str(e)
-                    # 简单识别 429 或 RESOURCE_EXHAUSTED
-                    if '429' in msg or 'RESOURCE_EXHAUSTED' in msg:
-                        time.sleep(1)
-                        continue
-                    raise
-
-        return wrapper
-
-    return decorator
-
-
-@rate_limit(10, 60)
+@rate_limit(setting['rate_per_minute'], 60)
 def get_llm_response(instructions: str, input: str) -> str:
     return (
         client.chat.completions.create(
@@ -184,20 +131,4 @@ def run():
 
 
 if __name__ == '__main__':
-    # run()
-    try:
-        instance = {
-            'type': 'alias',
-            'reason': 'rule: found old/new name pattern',
-            'mcp': [],
-        }
-        validate(
-            instance={
-                'type': 'alias',
-                'reason': 'rule: found old/new name pattern',
-                'mcp': [],
-            },
-            schema=SCHEMA['type'],
-        )
-    except ValidationError as e:
-        logger.error(formatter(e, instance))
+    run()

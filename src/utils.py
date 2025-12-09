@@ -1,7 +1,14 @@
 import json
+import threading
+import time
+from collections import deque
+from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
-from jsonschema import RefResolver, validate
+from jsonschema import RefResolver
+from jsonschema import validate as _validate
 from jsonschema.exceptions import ValidationError
 from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import FormattedText
@@ -42,6 +49,8 @@ Validator: {e.validator}
 Validator value: {e.validator_value}
 Instance: {e.instance}
 """.lstrip()
+def validate(instance: object, schema: Any):
+    return _validate(instance=instance, schema=schema, resolver=resolver)
 
 
 SCHEMA: dict[str, object] = {
@@ -79,7 +88,7 @@ def edit_json(d: dict, validator: dict) -> None | dict:
     def on_text_changed(buf):
         try:
             parsed = json.loads(buf.text)
-            validate(instance=parsed, schema=validator, resolver=resolver)
+            validate(instance=parsed, schema=validator)
             status_label.text = FormattedText([
                 ('fg:ansigreen', '状态：'),
                 ('fg:ansiwhite', 'JSON 语法正确'),
@@ -97,7 +106,7 @@ def edit_json(d: dict, validator: dict) -> None | dict:
 
     label = Label('按 Ctrl-S 保存并退出\n按 Esc 或 Ctrl-Q 取消编辑')
     status_label = Label("")
-
+    on_text_changed(SimpleNamespace(text=initial_json))
     root_container = HSplit([label, text_area, status_label],padding=0)
     app = Application(
         layout=Layout(root_container),
@@ -113,7 +122,7 @@ def edit_json(d: dict, validator: dict) -> None | dict:
 
     try:
         parsed = json.loads(edited)
-        validate(instance=parsed, schema=validator, resolver=resolver)
+        validate(instance=parsed, schema=validator)
         # console.print(Syntax(json.dumps(parsed, indent=2, ensure_ascii=False),'json',theme='monokai',))
         return parsed
     except ValidationError as e:
@@ -124,10 +133,61 @@ def edit_json(d: dict, validator: dict) -> None | dict:
         return None
 
 
-logger.info(edit_json(
-    {
-        'type': 'alias',
-        'reason': 'rule: found old/new name pattern',
-        'mcp': [],
-    },SCHEMA['type']
-))
+
+def rate_limit(max_calls: int, per_seconds: float):
+    """
+    通用限速装饰器：
+    - max_calls：时间窗口内最多调用次数。如果 max_calls=0，则禁用限速。
+    - per_seconds：窗口秒数
+    """
+
+    # max_calls=0 时，直接返回一个透传装饰器
+    if max_calls <= 0:
+
+        def bypass_decorator(func):
+            return func
+
+        return bypass_decorator
+
+    # 正常限速逻辑
+    calls = deque()
+    lock = threading.Lock()
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # 限速逻辑
+            with lock:
+                now = time.time()
+                # 清理窗口外的调用记录
+                while calls and now - calls[0] > per_seconds:
+                    calls.popleft()
+
+                # 如果超过限额，等待直到下一次可用
+                if len(calls) >= max_calls:
+                    sleep_for = per_seconds - (now - calls[0])
+                    if sleep_for > 0:
+                        time.sleep(sleep_for)
+
+                    # 重新获取当前时间并再次清理已过期记录
+                    now = time.time()
+                    while calls and now - calls[0] > per_seconds:
+                        calls.popleft()
+
+                calls.append(time.time())
+
+            # 调用目标函数，自动重试 429
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    msg = str(e)
+                    # 简单识别 429 或 RESOURCE_EXHAUSTED
+                    if '429' in msg or 'RESOURCE_EXHAUSTED' in msg:
+                        time.sleep(1)
+                        continue
+                    raise
+
+        return wrapper
+
+    return decorator

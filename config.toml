@@ -5,6 +5,7 @@ REPO_NAME = 'university-information'
 llm = { key = '', server = '', model = 'gemini-2.5-flash' }
 [settings]
 type = ['discussions'] # issues or discussions
+rate_per_minute = 10
 prompt_type = """
 任务
 识别下面的 issue 类型，并在该类型为 "outdated" / "evil" / "alias" 时，生成处理该 issue 所需的 MCP 指令（仅用于获取更多信息）。**仅**返回一个单行 JSON 对象，不要任何额外文字或注释。
