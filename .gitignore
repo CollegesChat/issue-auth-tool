@@ -6,7 +6,7 @@ __pycache__/
 .qodo
 # C extensions
 *.so
-
+database/
 # Distribution / packaging
 .Python
 build/

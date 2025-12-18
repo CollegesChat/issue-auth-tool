@@ -1,16 +1,23 @@
 import re
 import shlex
-from json import loads
-from typing import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
+from json import dumps, loads
+from json.decoder import JSONDecodeError
+from pathlib import Path
+from typing import Iterable, Iterator
 
 from github import Auth, Github
+from jsonschema import ValidationError
 from openai import OpenAI
 from rich.prompt import Prompt
 
 from settings import config
 
-from .exceptions import DecodeError
-from .utils import SCHEMA, edit_json, rate_limit, validate
+from .utils import SCHEMA, edit_json, logger, rate_limit, validate
+
+type DecodeError = JSONDecodeError | ValidationError
+
 
 g = Github(auth=Auth.Token(config['secret']['GITHUB_TOKEN']))
 repo = g.get_repo(f'{config["secret"]["OWNER"]}/{config["secret"]["REPO_NAME"]}')
@@ -47,29 +54,53 @@ def strip_markdown(md: str) -> str:
     return text.strip()
 
 
-def fetch_issues_and_discussions() -> Iterator[dict]:
-    # issues
-    if 'issues' in setting['type']:
-        for issue in repo.get_issues(state='open'):
-            # 过滤 PR（在 PyGithub 中 pull_request 属性可能存在）
+def fetch_issues_and_discussions(
+    ignore_nums: Iterable[int] = (),
+) -> Iterator[dict]:
+    types = setting['type']
+    ignore: set[int] = set(ignore_nums)
+    logger.warning(f'忽略以下编号： {ignore}')
+    strip = strip_markdown
+    repo_issues = repo.get_issues
+    repo_discussions = repo.get_discussions
+    def iter_issues():
+        for issue in repo_issues(state='open'):
+            # 过滤 PR
             if getattr(issue, 'pull_request', None):
+                continue
+            if issue.number in ignore:
                 continue
             yield {
                 'title': issue.title,
                 'num': issue.number,
-                'text': strip_markdown(issue.body or '(无内容)'),
+                'text': strip(issue.body or '(无内容)'),
             }
 
-    # discussions
-    if 'discussions' in setting['type']:
-        for disc in repo.get_discussions(
-            discussion_graphql_schema='id number title body', answered=False
+    def iter_discussions():
+        for disc in repo_discussions(
+            discussion_graphql_schema='id number title body',
+            answered=False,
         ):
+            if disc.number in ignore:
+                continue
             yield {
                 'title': disc.title,
                 'num': disc.number,
-                'text': strip_markdown(disc.body or '(无内容)')[:1024],  # 限制长度
+                'text': strip(disc.body or '(无内容)')[:1024],
             }
+
+    # 没有需要拉取的类型，直接返回
+    tasks = []
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        if 'issues' in types:
+            tasks.append(ex.submit(lambda: list(iter_issues())))
+        if 'discussions' in types:
+            tasks.append(ex.submit(lambda: list(iter_discussions())))
+
+        for fut in as_completed(tasks):
+            # 逐个任务完成后再逐条 yield，避免阻塞
+            for item in fut.result():
+                yield item
 
 
 def handle_instruction(instructions: list[str]) -> str:
@@ -104,30 +135,46 @@ def get_llm_response(instructions: str, input: str) -> str:
     )
 
 
+db_path = Path(__file__).parent.parent / 'database'
+
+
 def run():
-    for post in fetch_issues_and_discussions():
-        ret = loads(get_llm_response(setting['prompt_type'], CONTENT.format(**post)))
-        print(ret | {'num': post['num']})
+    for post in fetch_issues_and_discussions(
+        (int(p.stem) for p in db_path.glob('*.json'))
+    ):
+        ret = None
         try:
+            ret = loads(
+                get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            )
             validate(instance=ret, schema=SCHEMA['type'])
             ret |= {'num': post['num']}
         except DecodeError as e:
-            if {'y': False, 'n': True}[
-                Prompt.ask(
-                    '解析出错，是否人工修改？',
-                    default='n',
-                    choices=['n', 'y'],
-                    case_sensitive=False,
-                )
-            ]:
+            answer = Prompt.ask(
+                '解析出错，是否人工修改？',
+                default='n',
+                choices=['n', 'y'],
+                case_sensitive=False,
+            )
+            if answer == 'y':
                 corrected = edit_json(ret, SCHEMA['type'])
                 if corrected is not None:
                     corrected |= {'num': post['num']}
-                    print('修正后的数据：', corrected)
+                    logger.info('修正后的数据： %s', corrected)
                 else:
-                    print(f'编号 {post["num"]} 验证失败: {e.message}')
-            else:
-                pass
+                    logger.error(f'编号 {post["num"]} 验证失败: {e.message}')
+                    continue
+        if not db_path.exists():
+            db_path.mkdir(parents=True)
+        with suppress(FileExistsError):
+            with open(
+                db_path / f'{post["num"]}.json',
+                'x',
+                encoding='utf-8',
+            ) as f:
+                if ret is not None:
+                    f.write(dumps((ret or corrected), ensure_ascii=False, indent=2))
+                    logger.info(f'已保存编号 {post["num"]} 的结果。')
 
 
 if __name__ == '__main__':
