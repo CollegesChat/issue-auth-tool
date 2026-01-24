@@ -1,12 +1,11 @@
 import json
-import sqlite3
 import threading
 import time
 from collections import deque
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Mapping
+from typing import Any
 
 from jsonschema import RefResolver
 from jsonschema import validate as _validate
@@ -57,7 +56,7 @@ def validate(instance: object, schema: Any):
     return _validate(instance=instance, schema=schema, resolver=resolver)
 
 
-SCHEMA: dict[str, object] = {
+SCHEMA: dict[str, dict] = {
     'judgement': json.loads(
         (Path(__file__).parent / 'schema' / 'judgement.schema.json').read_text()
     ),
@@ -67,15 +66,14 @@ SCHEMA: dict[str, object] = {
 }
 
 
-def edit_json(d: dict, validator: dict) -> None | dict:
+def edit_json(json_data: str, validator: dict, type: Exception) -> None | dict:
     """
-    打开一个可编辑的 JSON 文本框，初始内容为 j 的漂亮打印。
+    打开一个可编辑的 JSON 文本框，初始内容为 json_data 的漂亮打印。
     - 按 Ctrl-S 保存并退出：返回解析后的 dict（如果 JSON 有误，会打印错误并返回 None）。
     - 按 Esc 或 Ctrl-Q 取消编辑并返回 None。
     """
-    initial_json = json.dumps(d, ensure_ascii=False, indent=2)
     text_area = TextArea(
-        text=initial_json,
+        text=json_data,
         lexer=PygmentsLexer(JsonLexer),
         scrollbar=False,
         line_numbers=True,
@@ -113,7 +111,7 @@ def edit_json(d: dict, validator: dict) -> None | dict:
 
     label = Label('按 Ctrl-S 保存并退出\n按 Esc 或 Ctrl-Q 取消编辑')
     status_label = Label('')
-    on_text_changed(SimpleNamespace(text=initial_json))
+    on_text_changed(SimpleNamespace(text=json_data))
     root_container = HSplit([label, text_area, status_label], padding=0)
     app = Application(
         layout=Layout(root_container),
@@ -122,7 +120,7 @@ def edit_json(d: dict, validator: dict) -> None | dict:
         mouse_support=True,
         erase_when_done=True,
     )
-    edited = app.run()
+    edited: str | None = app.run()
 
     if edited is None:
         return None
@@ -133,7 +131,7 @@ def edit_json(d: dict, validator: dict) -> None | dict:
         # console.print(Syntax(json.dumps(parsed, indent=2, ensure_ascii=False),'json',theme='monokai',))
         return parsed
     except ValidationError as e:
-        logger.error(formatter(e))
+        logger.error(formatter(e, edited))
         return None
     except json.JSONDecodeError as e:
         logger.error(f'[red]JSON 解析错误:[/red] {e}')
@@ -197,32 +195,3 @@ def rate_limit(max_calls: int, per_seconds: float):
         return wrapper
 
     return decorator
-
-
-
-class DB:
-    def __init__(self, path: str):
-        self.conn = sqlite3.connect(path)
-        self.conn.row_factory = sqlite3.Row
-
-    def exec(self, sql: str, args=()):
-        self.conn.execute(sql, args)
-        self.conn.commit()
-
-    def insert(self, table: str, row: Mapping):
-        cols = ', '.join(row)
-        qs = ', '.join('?' for _ in row)
-        self.exec(
-            f'INSERT INTO {table} ({cols}) VALUES ({qs})',
-            tuple(row.values()),
-        )
-
-    def update_status(self, num: int, status: str):
-        self.exec(
-            'UPDATE task SET status = ? WHERE num = ?',
-            (status, num),
-        )
-
-    def select(self, sql: str, args=()) -> list[dict]:
-        cur = self.conn.execute(sql, args)
-        return [dict(r) for r in cur]

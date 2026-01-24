@@ -5,19 +5,16 @@ from contextlib import suppress
 from json import dumps, loads
 from json.decoder import JSONDecodeError
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Never
 
 from github import Auth, Github
 from jsonschema import ValidationError
 from openai import OpenAI
 from rich.prompt import Prompt
 
-from settings import config
-
-from .utils import SCHEMA, edit_json, logger, rate_limit, validate
-
-type DecodeError = JSONDecodeError | ValidationError
-
+from . import logger
+from .settings import config
+from .utils import SCHEMA, edit_json, rate_limit, validate
 
 g = Github(auth=Auth.Token(config['secret']['GITHUB_TOKEN']))
 repo = g.get_repo(f'{config["secret"]["OWNER"]}/{config["secret"]["REPO_NAME"]}')
@@ -111,7 +108,7 @@ def handle_instruction(instructions: list[str]) -> str:
                 pass
             case 'view':
                 pass
-
+    return ''
 
 CONTENT = """
 标题：{title}
@@ -121,18 +118,19 @@ CONTENT = """
 
 
 @rate_limit(setting['rate_per_minute'], 60)
-def get_llm_response(instructions: str, input: str) -> str:
-    return (
-        client.chat.completions.create(
+def get_llm_response(instructions: str, input: str) -> str | Never:
+    ret= client.chat.completions.create(
             model=config['secret']['llm']['model'],
             messages=[
                 {'role': 'system', 'content': instructions},
                 {'role': 'user', 'content': input},
             ],
-        )
-        .choices[0]
-        .message.content
-    )
+        ).choices[0].message.content
+    if ret is not None:
+        return ret
+    else:
+        raise ValueError
+
 
 
 db_path = Path(__file__).parent.parent / 'database'
@@ -144,12 +142,11 @@ def run():
     ):
         ret = None
         try:
-            ret = loads(
-                get_llm_response(setting['prompt_type'], CONTENT.format(**post))
-            )
+            ret =get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            ret: dict = loads(ret)
             validate(instance=ret, schema=SCHEMA['type'])
             ret |= {'num': post['num']}
-        except DecodeError as e:
+        except (JSONDecodeError,ValidationError) as e:
             answer = Prompt.ask(
                 '解析出错，是否人工修改？',
                 default='n',
@@ -157,12 +154,12 @@ def run():
                 case_sensitive=False,
             )
             if answer == 'y':
-                corrected = edit_json(ret, SCHEMA['type'])
+                corrected = edit_json(ret if e is JSONDecodeError else dumps(ret, indent=2,ensure_ascii=False), SCHEMA['type'], e)
                 if corrected is not None:
                     corrected |= {'num': post['num']}
                     logger.info('修正后的数据： %s', corrected)
                 else:
-                    logger.error(f'编号 {post["num"]} 验证失败: {e.message}')
+                    logger.error(f'编号 {post["num"]} 验证失败: {getattr(e,'message', str(e))}')
                     continue
         if not db_path.exists():
             db_path.mkdir(parents=True)
