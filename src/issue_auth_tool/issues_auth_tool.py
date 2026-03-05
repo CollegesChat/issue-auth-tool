@@ -142,7 +142,9 @@ def run():
     ):
         ret = None
         try:
-            ret =get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            ret = get_llm_response(
+                setting['prompt_type'], CONTENT.format(**post)
+            )
             ret: dict = loads(ret)
             validate(instance=ret, schema=SCHEMA['type'])
             ret |= {'num': post['num']}

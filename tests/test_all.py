@@ -4,13 +4,15 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
-from jsonschema import ValidationError, validate
+from jsonschema import ValidationError
+
+from issue_auth_tool.utils import validate as schema_validate
 
 # atexit.register(save_on_exit)
 
 # 项目根目录
 SRC_DIR = Path(__file__).parent.parent
-SCHEMA_DIR = SRC_DIR / 'src/schema'
+SCHEMA_DIR = SRC_DIR / 'src/issue_auth_tool/schema'
 TEST_DIR = SRC_DIR / 'tests'
 print(SCHEMA_DIR, TEST_DIR)
 
@@ -62,7 +64,7 @@ def get_test_cases():
                     False,  # should_pass
                 )
             )
-
+    print(cases)
     return cases
 
 
@@ -80,13 +82,14 @@ def test_json_schema_validation(test_name, schema, data, should_pass):
     if should_pass:
         # legal 用例：应该验证通过
         try:
-            validate(instance=data, schema=schema)
+            schema_validate(instance=data, schema=schema)
         except ValidationError as e:
-            pytest.fail(f"Legal case '{test_name}' failed validation: {e.message}")
+            raise AssertionError(f"Legal case '{test_name}' failed validation: {e.message}") from e
+
     else:
         # illegal 用例：应该验证失败
         with pytest.raises(ValidationError):
-            validate(instance=data, schema=schema)
+            schema_validate(instance=data, schema=schema)
 
 
 pytest.main([__file__])

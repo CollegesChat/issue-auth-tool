@@ -7,9 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from jsonschema import RefResolver
-from jsonschema import validate as _validate
 from jsonschema.exceptions import ValidationError
+from jsonschema.validators import validator_for
 from prompt_toolkit.application import Application
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
@@ -19,6 +18,9 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.lexers import PygmentsLexer
 from prompt_toolkit.widgets import Label, TextArea
 from pygments.lexers.data import JsonLexer
+from referencing import Registry, Resource
+from referencing.exceptions import NoSuchResource
+from referencing.jsonschema import DRAFT7
 
 from . import logger
 
@@ -31,29 +33,32 @@ def load_regex(uri: str):
         return {'type': 'string', 'pattern': f.read().strip()}
 
 
-resolver = RefResolver(
-    base_uri='',
-    referrer=None,
-    handlers={
-        'regex': load_regex  # 注册 URI scheme loader
-    },
-)
+def retrieve_schema(uri: str) -> Resource:
+    if uri.startswith('regex://'):
+        return Resource.from_contents(
+            load_regex(uri), default_specification=DRAFT7
+        )
+    raise NoSuchResource(ref=uri)
+
+
+registry = Registry(retrieve=retrieve_schema)
 
 
 def formatter(e: ValidationError, instance: dict) -> str:
-    return f"""
-JSON: {instance}
+    return f"""JSON: {instance}
 Message: {e.message}
 Path: {list(e.path)}
 Schema path: {list(e.schema_path)}
 Validator: {e.validator}
 Validator value: {e.validator_value}
-Instance: {e.instance}
-""".lstrip()
+Instance: {e.instance}"""
 
 
 def validate(instance: object, schema: Any):
-    return _validate(instance=instance, schema=schema, resolver=resolver)
+    validator_cls = validator_for(schema)
+    validator_cls.check_schema(schema)
+    validator = validator_cls(schema=schema, registry=registry)
+    validator.validate(instance)
 
 
 SCHEMA: dict[str, dict] = {
