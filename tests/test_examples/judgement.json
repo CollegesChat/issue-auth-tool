@@ -1,0 +1,16 @@
+{
+  "legal": [
+    [
+      "del 11122",
+      "outdate 大学一 大学二"
+    ],
+    null
+  ],
+  "illegal": [
+    [
+      "invalid 11122",
+      "invalid 大学一 大学二"
+    ],
+    "null"
+  ]
+}

@@ -126,5 +126,5 @@ uv sync
 ```bash
 uv venv activate
 ... # 激活虚拟环境的指令
-python3 -m src.issues_auth_tool
+uv run issue_auth_tool
 ```

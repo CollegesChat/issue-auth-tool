@@ -14,7 +14,6 @@ from issue_auth_tool.utils import validate as schema_validate
 SRC_DIR = Path(__file__).parent.parent
 SCHEMA_DIR = SRC_DIR / 'src/issue_auth_tool/schema'
 TEST_DIR = SRC_DIR / 'tests'
-print(SCHEMA_DIR, TEST_DIR)
 
 database: dict[int, Literal['invalid', 'processed']] = {}
 
@@ -34,7 +33,7 @@ def get_test_cases():
     # 遍历所有 schema 文件
     for schema_file in SCHEMA_DIR.glob('*.schema.json'):
         schema_name = schema_file.stem.replace('.schema', '')
-        test_file = TEST_DIR / f'{schema_name}.json'
+        test_file = TEST_DIR / 'test_examples' / f'{schema_name}.json'
 
         if not test_file.exists():
             continue
@@ -64,7 +63,6 @@ def get_test_cases():
                     False,  # should_pass
                 )
             )
-    print(cases)
     return cases
 
 

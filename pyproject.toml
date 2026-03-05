@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-issue_auth_tool = "issues_auth_tool:run"
+issue_auth_tool = "issue_auth_tool.issues_auth_tool:run"
 
 [build-system]
 requires = ["setuptools>=61.0"]
