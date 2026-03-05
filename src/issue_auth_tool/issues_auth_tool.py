@@ -154,7 +154,7 @@ def run():
                 case_sensitive=False,
             )
             if answer == 'y':
-                corrected = edit_json(ret if e is JSONDecodeError else dumps(ret, indent=2,ensure_ascii=False), SCHEMA['type'], e)
+                corrected = edit_json(ret if e is JSONDecodeError else dumps(ret, indent=2,ensure_ascii=False), SCHEMA['type'])
                 if corrected is not None:
                     corrected |= {'num': post['num']}
                     logger.info('修正后的数据： %s', corrected)

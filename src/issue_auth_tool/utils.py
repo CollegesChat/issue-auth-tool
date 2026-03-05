@@ -66,7 +66,7 @@ SCHEMA: dict[str, dict] = {
 }
 
 
-def edit_json(json_data: str, validator: dict, type: Exception) -> None | dict:
+def edit_json(json_data: str, validator: dict) -> None | dict:
     """
     打开一个可编辑的 JSON 文本框，初始内容为 json_data 的漂亮打印。
     - 按 Ctrl-S 保存并退出：返回解析后的 dict（如果 JSON 有误，会打印错误并返回 None）。
