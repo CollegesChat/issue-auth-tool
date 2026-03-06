@@ -25,5 +25,10 @@ python = "./.venv"
 root = ['src']
 [dependency-groups]
 dev = [
+    "objprint>=0.3.0",
     "pytest>=8.4.2",
+]
+[tool.pytests]
+markers = [
+    "manual: tests that should only be run manually"
 ]

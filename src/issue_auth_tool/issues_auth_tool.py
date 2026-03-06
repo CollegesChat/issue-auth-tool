@@ -12,6 +12,8 @@ from jsonschema import ValidationError
 from openai import OpenAI
 from rich.prompt import Prompt
 
+from issue_auth_tool.types import PostData
+
 from . import logger
 from .settings import config
 from .utils import SCHEMA, edit_json, rate_limit, validate
@@ -25,35 +27,42 @@ client = OpenAI(
 setting = config['settings']
 
 
-def strip_markdown(md: str) -> str:
-    text = md
-    # 删除代码块 ```...``` 和 ~~~...~~~
-    text = re.sub(r'```[\s\S]*?```', '', text)
-    text = re.sub(r'~~~[\s\S]*?~~~', '', text)
-    # 删除行内代码 `...`
-    text = re.sub(r'`[^`]*`', '', text)
-    # 删除图片 ![alt](url)
-    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-    # 删除链接 [text](url) -> 保留 text
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    # 删除加粗/斜体 **text**, __text__, *text*, _text_
-    text = re.sub(r'(\*\*|__)(.*?)\1', r'\2', text)
-    text = re.sub(r'(\*|_)(.*?)\1', r'\2', text)
-    # 删除标题 #
-    text = re.sub(r'^#+\s*', '', text, flags=re.MULTILINE)
-    # 删除引用 >
-    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
-    # 删除水平线 ---
-    text = re.sub(r'^-{3,}$', '', text, flags=re.MULTILINE)
-    # 删除多余的空白行
+MARKDOWN_CLEANER = re.compile(
+        r"""
+          (```[\s\S]*?```|~~~[\s\S]*?~~~) # 1. 匹配代碼塊 (Block Code)
+        | (`[^`]*`)                         # 2. 匹配行內代碼 (Inline Code)
+        | (!\[.*?\]\(.*?\))                 # 3. 匹配圖片 (Images)
+        | (\[(?P<link_text>[^\]]+)\]\([^)]+\)) # 4. 匹配鏈接 (Links)，捕獲組名為 link_text
+        | (\*\*|__)(?P<bold_text>.*?)     # 5. 匹配加粗 (Bold)
+        | (\*|_)(?P<italic_text>.*?)      # 6. 匹配斜體 (Italic)
+        | (^\s*\#+\s*)                       # 7. 匹配標題符號 (Headers)
+        | (^\s*>\s?)                        # 8. 匹配引用符號 (Blockquotes)
+        | (^\s*-{3,}\s*$)                   # 9. 匹配水平線 (HR)
+    """,
+        re.VERBOSE | re.MULTILINE,
+    )
+def strip_markdown(md):
+
+    # 定義替換邏輯的函數
+    def replace_func(match):
+        # 提取鏈接文字、加粗文字或斜體文字
+        if match.group('link_text'):
+            return match.group('link_text')
+        if match.group('bold_text'):
+            return match.group('bold_text')
+        if match.group('italic_text'):
+            return match.group('italic_text')
+        # 其他匹配項（如代碼塊、圖片、標題號）直接刪除
+        return ''
+    text = MARKDOWN_CLEANER.sub(replace_func, md)
+
     text = re.sub(r'\n\s*\n', '\n', text)
-    # 去除首尾空白
     return text.strip()
 
 
 def fetch_issues_and_discussions(
     ignore_nums: Iterable[int] = (),
-) -> Iterator[dict]:
+) -> Iterator[PostData]:
     types = setting['type']
     ignore: set[int] = set(ignore_nums)
     logger.warning(f'忽略以下编号： {ignore}')
