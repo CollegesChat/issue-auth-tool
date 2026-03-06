@@ -29,15 +29,14 @@ setting = config['settings']
 
 MARKDOWN_CLEANER = re.compile(
         r"""
-          (```[\s\S]*?```|~~~[\s\S]*?~~~) # 1. 匹配代碼塊 (Block Code)
-        | (`[^`]*`)                         # 2. 匹配行內代碼 (Inline Code)
-        | (!\[.*?\]\(.*?\))                 # 3. 匹配圖片 (Images)
-        | (\[(?P<link_text>[^\]]+)\]\([^)]+\)) # 4. 匹配鏈接 (Links)，捕獲組名為 link_text
-        | (\*\*|__)(?P<bold_text>.*?)     # 5. 匹配加粗 (Bold)
-        | (\*|_)(?P<italic_text>.*?)      # 6. 匹配斜體 (Italic)
-        | (^\s*\#+\s*)                       # 7. 匹配標題符號 (Headers)
-        | (^\s*>\s?)                        # 8. 匹配引用符號 (Blockquotes)
-        | (^\s*-{3,}\s*$)                   # 9. 匹配水平線 (HR)
+          (```[\s\S]*?```|~~~[\s\S]*?~~~)   #  匹配代碼塊 (Block Code)
+        | (!\[.*?\]\(.*?\))                 #  匹配圖片 (Images)
+        | (\[(?P<link_text>[^\]]+)\]\([^)]+\)) #  匹配鏈接 (Links)，捕獲組名為 link_text
+        | (\*\*|__)(?P<bold_text>.*?)       #  匹配加粗 (Bold)
+        | (\*|_)(?P<italic_text>.*?)        #  匹配斜體 (Italic)
+        | (^\s*\#+\s*)                      #  匹配標題符號 (Headers)
+        | (^\s*>\s?)                        #  匹配引用符號 (Blockquotes)
+        | (^\s*-{3,}\s*$)                   #  匹配水平線 (HR)
     """,
         re.VERBOSE | re.MULTILINE,
     )
