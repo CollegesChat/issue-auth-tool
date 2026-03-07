@@ -1,6 +1,7 @@
 import re
 import shlex
 from contextlib import suppress
+from dataclasses import dataclass
 from json import dumps, loads
 from json.decoder import JSONDecodeError
 from pathlib import Path
@@ -15,7 +16,7 @@ from rich.prompt import Prompt
 
 from issue_auth_tool.types import PostData
 
-from . import console_lock, logger
+from . import logger
 from .settings import config
 from .utils.util import SCHEMA, edit_json, rate_limit, validate
 
@@ -92,7 +93,7 @@ def fetch_issues_and_discussions(
 
     def iter_discussions():
         for disc in repo_discussions(
-            discussion_graphql_schema='id number title body',
+            discussion_graphql_schema='id number title body', # TODO: 過濾指定id的討論
             answered=False,
         ):
             if disc.number in ignore:
@@ -203,56 +204,51 @@ def get_llm_response(instructions: str, input: str) -> str | Never:
 
 
 db_path = Path(__file__).parent.parent / 'database'
-def process_post(post: PostData) -> None:
-    ret_text: str | None = None
-    corrected: dict | None = None
+
+
+@dataclass(slots=True)
+class DeferredPost:
+    post: PostData
+    ret_text: str | None
+
+
+def build_editable_text(ret_text: str | None) -> str:
+    if ret_text is None:
+        return ''
 
     try:
-        logger.debug('开始处理帖子: #%s %s', post['num'], post['title'])
-        ret_text = get_llm_response(setting['prompt_type'], CONTENT.format(**post))
-        logger.debug('LLM 原始输出: #%s %s', post['num'], ret_text)
-        result: dict = loads(ret_text)
-        validate(instance=result, schema=SCHEMA['type'])
-        logger.debug('LLM 输出校验通过: #%s type=%s', post['num'], result.get('type'))
-        result |= {'num': post['num']}
-    except (JSONDecodeError, ValidationError) as e:
-        with console_lock:
-            answer = Prompt.ask(
-                '解析出错，是否人工修改？',
-                default='n',
-                choices=['n', 'y'],
-                case_sensitive=False,
-            )
-            if answer == 'y':
-                editable = (
-                    ret_text
-                    if isinstance(e, JSONDecodeError)
-                    else dumps(
-                        loads(ret_text) if ret_text is not None else {},
-                        indent=2,
-                        ensure_ascii=False,
-                    )
-                )
-                corrected = edit_json(editable, SCHEMA['type'])  # type: ignore
-                if corrected is not None:
-                    corrected |= {'num': post['num']}
-                    logger.info('修正后的数据： %s', corrected)
-                else:
-                    logger.error(
-                        '编号 %s 验证失败: %s',
-                        post['num'],
-                        getattr(e, 'message', str(e)),
-                    )
-                    return
-            else:
-                logger.error(
-                    '编号 %s 验证失败且未人工修正: %s',
-                    post['num'],
-                    getattr(e, 'message', str(e)),
-                )
-                return
+        return dumps(loads(ret_text), indent=2, ensure_ascii=False)
+    except JSONDecodeError:
+        return ret_text
 
-    output = corrected if corrected is not None else result
+
+def prompt_manual_fix(deferred: DeferredPost) -> dict | None:
+    post = deferred.post
+    answer = Prompt.ask(
+        '解析出错，是否人工修改？',
+        default='n',
+        choices=['n', 'y'],
+        case_sensitive=False,
+    )
+    if answer != 'y':
+        logger.error(
+            '编号 %s 解析失败且未人工修正。',
+            post['num'],
+        )
+        return None
+
+    editable = build_editable_text(deferred.ret_text)
+    corrected = edit_json(editable, SCHEMA['type'])
+    if corrected is None:
+        logger.error('编号 %s 解析失败。', post['num'])
+        return None
+
+    corrected |= {'num': post['num']}
+    logger.info('修正后的数据： %s', corrected)
+    return corrected
+
+
+def save_post_output(post: PostData, output: dict) -> None:
     with suppress(FileExistsError):
         with open(
             db_path / f'{post["num"]}.json',
@@ -263,6 +259,46 @@ def process_post(post: PostData) -> None:
             logger.info('已保存编号 %s 的结果。', post['num'])
 
 
+def process_post(
+    post: PostData,
+    *,
+    prompt_on_failure: bool = True,
+    deferred_failure: DeferredPost | None = None,
+) -> DeferredPost | None:
+    output: dict | None = None
+    failure = deferred_failure
+
+    if failure is None:
+        ret_text: str | None = None
+        try:
+            logger.debug('开始处理帖子: #%s %s', post['num'], post['title'])
+            ret_text = get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            logger.debug('LLM 原始输出: #%s %s', post['num'], ret_text)
+            result: dict = loads(ret_text)
+            validate(instance=result, schema=SCHEMA['type'])
+            logger.debug(
+                'LLM 输出校验通过: #%s type=%s', post['num'], result.get('type')
+            )
+            result |= {'num': post['num']}
+            output = result
+        except (JSONDecodeError, ValidationError):
+            failure = DeferredPost(
+                post=post,
+                ret_text=ret_text,
+            )
+            if not prompt_on_failure:
+                logger.warning('编号 %s 解析失败，已推迟到最后串行处理。', post['num'])
+                return failure
+
+    if failure is not None:
+        output = prompt_manual_fix(failure)
+        if output is None:
+            return None
+
+    save_post_output(post, output) # type: ignore
+    return None
+
+
 def run():
     worker_count = setting.get('workers', 4)
     logger.debug('帖子处理 worker_count=%s', worker_count)
@@ -271,7 +307,8 @@ def run():
         db_path.mkdir(parents=True)
 
     post_queue: Queue[PostData | None] = Queue()
-    error_queue: Queue[BaseException] = Queue()
+    error_queue: list[BaseException] = []
+    deferred_posts: list[DeferredPost] = []
 
     def consume_posts() -> None:
         while True:
@@ -279,10 +316,12 @@ def run():
             if item is None:
                 return
             try:
-                process_post(item)
+                deferred = process_post(item, prompt_on_failure=False)
+                if deferred is not None:
+                    deferred_posts.append(deferred)
             except BaseException as exc:
                 logger.error('处理帖子失败: %s', exc)
-                error_queue.put(exc)
+                error_queue.append(exc)
 
     workers = [
         Thread(target=consume_posts, name=f'process-post-{idx}')
@@ -302,8 +341,17 @@ def run():
         for worker in workers:
             worker.join()
 
-    if not error_queue.empty():
-        raise error_queue.get()
+    if deferred_posts:
+        logger.info('开始串行处理 %s 个解析失败任务。', len(deferred_posts))
+        for deferred in deferred_posts:
+            try:
+                process_post(deferred.post, deferred_failure=deferred)
+            except BaseException as exc:
+                logger.error('串行处理帖子失败: %s', exc)
+                error_queue.append(exc)
+
+    if error_queue:
+        raise error_queue[0]
 
 
 if __name__ == '__main__':

@@ -24,11 +24,11 @@ from referencing.jsonschema import DRAFT7
 
 from .. import logger
 
-
+SRC = Path(__file__).parent.parent
 def load_regex(uri: str):
     # regex://username.regex → username.regex
     key = uri.replace('regex://', '')
-    path = Path(__file__).parent / 'schema' / 'regex' / f'{key}'
+    path = SRC / 'schema' / 'regex' / f'{key}'
     with open(path, 'r', encoding='utf-8') as f:
         return {'type': 'string', 'pattern': f.read().strip()}
 
@@ -62,12 +62,8 @@ def validate(instance: object, schema: Any):
 
 
 SCHEMA: dict[str, dict] = {
-    'judgement': json.loads(
-        (Path(__file__).parent / 'schema' / 'judgement.schema.json').read_text()
-    ),
-    'type': json.loads(
-        (Path(__file__).parent / 'schema' / 'type.schema.json').read_text()
-    ),
+    'judgement': json.loads((SRC / 'schema' / 'judgement.schema.json').read_text()),
+    'type': json.loads((SRC / 'schema' / 'type.schema.json').read_text()),
 }
 
 

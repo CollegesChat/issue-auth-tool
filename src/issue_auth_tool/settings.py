@@ -3,6 +3,6 @@ from typing import cast
 
 from .types import AppConfig, SettingConfig
 
-with open('_config.toml', 'rb') as f:
+with open('config.toml', 'rb') as f:
     config: AppConfig = cast(AppConfig, load(f))
 setting: SettingConfig = config['settings']

@@ -200,6 +200,7 @@ def test_run_processes_posts_with_configured_workers(monkeypatch, tmp_path):
     release_workers.set()
     runner.join(1)
 
+    assert not runner.is_alive()
     assert not run_error
     assert max_active == 2
     assert sorted(path.stem for path in tmp_path.glob('*.json')) == ['1', '2', '3']
@@ -277,10 +278,9 @@ def test_process_post_validation_failure_can_skip_manual_edit(
     assert not (tmp_path / '1.json').exists()
 
 
-def test_process_post_prompt_waits_for_console_lock(monkeypatch, tmp_path):
+def test_process_post_can_defer_validation_failure(monkeypatch, tmp_path):
     issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
     post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
-    prompt_called = Event()
 
     monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
     monkeypatch.setattr(
@@ -291,18 +291,96 @@ def test_process_post_prompt_waits_for_console_lock(monkeypatch, tmp_path):
             ensure_ascii=False,
         ),
     )
+    prompt_called = False
+    edit_called = False
+
+    def fake_prompt(*args, **kwargs):
+        nonlocal prompt_called
+        prompt_called = True
+        return 'n'
+
+    def fake_edit_json(editable: str, schema: dict) -> dict:
+        nonlocal edit_called
+        edit_called = True
+        return {'type': 'invalid', 'reason': 'fixed', 'mcp': []}
+
+    monkeypatch.setattr(issues_auth_tool.Prompt, 'ask', fake_prompt)
+    monkeypatch.setattr(issues_auth_tool, 'edit_json', fake_edit_json)
+
+    deferred = issues_auth_tool.process_post(post, prompt_on_failure=False)
+
+    assert deferred is not None
+    assert deferred.post == post
+    assert deferred.ret_text is not None
+    assert loads(deferred.ret_text) == {
+        'type': 'invalid',
+        'reason': 'ok',
+        'mcp': ['view 1'],
+    }
+    assert not prompt_called
+    assert not edit_called
+    assert not (tmp_path / '1.json').exists()
+
+
+def test_run_defers_failed_posts_until_parallel_work_finishes(monkeypatch, tmp_path):
+    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
+    posts = [
+        {'title': 'Issue 1', 'num': 1, 'text': 'first issue'},
+        {'title': 'Issue 2', 'num': 2, 'text': 'second issue'},
+    ]
+    prompt_called = Event()
+    second_started = Event()
+    release_second = Event()
+
+    monkeypatch.setitem(issues_auth_tool.setting, 'workers', 2)
+    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
+    monkeypatch.setattr(
+        issues_auth_tool,
+        'fetch_issues_and_discussions',
+        lambda ignore_nums=(): iter(posts),
+    )
+
+    def fake_get_llm_response(instructions: str, input: str) -> str:
+        if '编号：1' in input:
+            return dumps(
+                {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']},
+                ensure_ascii=False,
+            )
+
+        second_started.set()
+        assert release_second.wait(1)
+        return '{"type":"invalid","reason":"ok","mcp":[]}'
+
+    monkeypatch.setattr(issues_auth_tool, 'get_llm_response', fake_get_llm_response)
     monkeypatch.setattr(
         issues_auth_tool.Prompt,
         'ask',
-        lambda *args, **kwargs: prompt_called.set() or 'n',
+        lambda *args, **kwargs: prompt_called.set() or 'y',
+    )
+    monkeypatch.setattr(
+        issues_auth_tool,
+        'edit_json',
+        lambda editable, schema: {'type': 'invalid', 'reason': 'fixed', 'mcp': []},
     )
 
-    worker = Thread(target=issues_auth_tool.process_post, args=(post,))
+    run_error: list[BaseException] = []
 
-    with issues_auth_tool.console_lock:
-        worker.start()
-        assert not prompt_called.wait(0.2)
+    def invoke_run() -> None:
+        try:
+            issues_auth_tool.run()
+        except BaseException as exc:
+            run_error.append(exc)
 
-    worker.join(1)
+    runner = Thread(target=invoke_run)
+    runner.start()
 
+    assert second_started.wait(1)
+    assert not prompt_called.wait(0.2)
+
+    release_second.set()
+    runner.join(1)
+
+    assert not runner.is_alive()
+    assert not run_error
     assert prompt_called.is_set()
+    assert sorted(path.stem for path in tmp_path.glob('*.json')) == ['1', '2']
