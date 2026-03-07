@@ -7,7 +7,7 @@ from json.decoder import JSONDecodeError
 from pathlib import Path
 from queue import Queue
 from threading import Thread
-from typing import Callable, Iterable, Iterator, Never
+from typing import Callable, Iterable, Iterator, Never, cast
 
 from github import Auth, Github
 from jsonschema import ValidationError
@@ -183,7 +183,6 @@ CONTENT = """
 
 @rate_limit(setting['rate_per_minute'], 60)
 def get_llm_response(instructions: str, input: str) -> str | Never:
-    logger.debug('发送 LLM 请求: input_len=%s', len(input))
     ret = (
         client.chat.completions
         .create(
@@ -197,7 +196,6 @@ def get_llm_response(instructions: str, input: str) -> str | Never:
         .message.content
     )
     if ret is not None:
-        logger.debug('收到 LLM 响应: output_len=%s', len(ret))
         return ret
     else:
         raise ValueError
@@ -209,12 +207,11 @@ db_path = Path(__file__).parent.parent / 'database'
 @dataclass(slots=True)
 class DeferredPost:
     post: PostData
-    ret_text: str | None
+    ret_text: str
 
 
-def build_editable_text(ret_text: str | None) -> str:
-    if ret_text is None:
-        return ''
+def build_editable_text(ret_text: str ) -> str:
+
 
     try:
         return dumps(loads(ret_text), indent=2, ensure_ascii=False)
@@ -225,18 +222,33 @@ def build_editable_text(ret_text: str | None) -> str:
 def prompt_manual_fix(deferred: DeferredPost) -> dict | None:
     post = deferred.post
     answer = Prompt.ask(
-        '解析出错，是否人工修改？',
+        """解析出错，是否人工修改？
+\tn = 不修改不保存结果
+\ty = 修改后保存结果
+\ti = 忽略并保存结果""",
         default='n',
-        choices=['n', 'y'],
+        choices=['n', 'y', 'i'],
         case_sensitive=False,
     )
-    if answer != 'y':
+    if answer == 'n':
         logger.error(
             '编号 %s 解析失败且未人工修正。',
             post['num'],
         )
         return None
-
+    elif answer == 'i':
+        try:
+            logger.warning(
+                '编号 %s 解析失败且将保存。',
+                post['num'],
+            )
+            return loads(deferred.ret_text)
+        except JSONDecodeError:
+            logger.error(
+                '编号 %s JSON解析失败，无法报错。',
+                post['num'],
+            )
+            return None
     editable = build_editable_text(deferred.ret_text)
     corrected = edit_json(editable, SCHEMA['type'])
     if corrected is None:
@@ -269,10 +281,11 @@ def process_post(
     failure = deferred_failure
 
     if failure is None:
-        ret_text: str | None = None
+        ret_text: str =''
         try:
             logger.debug('开始处理帖子: #%s %s', post['num'], post['title'])
-            ret_text = get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            ret_text = cast(str,get_llm_response(setting['prompt_type'], CONTENT.format(**post)))
+
             logger.debug('LLM 原始输出: #%s %s', post['num'], ret_text)
             result: dict = loads(ret_text)
             validate(instance=result, schema=SCHEMA['type'])
