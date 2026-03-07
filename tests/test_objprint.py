@@ -2,7 +2,8 @@ import pytest
 
 from issue_auth_tool import logger
 
-pytest.skip('skipping this module', allow_module_level=True) # type: ignore
+if __name__ != '__main__':
+    pytest.skip('skipping this module', allow_module_level=True) # type: ignore
 
 
 class Position:
@@ -36,3 +37,7 @@ logger.debug(
         2,
     ),Player()]
 )
+print(repr(Position(
+        1,
+        2,
+    )),repr(Player()))

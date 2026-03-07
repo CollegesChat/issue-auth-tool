@@ -1,7 +1,7 @@
 import json
 import threading
 import time
-from collections import deque
+from bisect import bisect_right, insort
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,32 +158,47 @@ def rate_limit(max_calls: int, per_seconds: float):
 
         return bypass_decorator
 
-    # 正常限速逻辑
-    calls = deque()
+    # 使用“预约执行时间”的方式做滑动窗口限速：
+    # 锁内只负责计算当前调用最早可执行的时间，实际等待在锁外完成。
+    reservations: list[float] = []
     lock = threading.Lock()
 
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            # 限速逻辑
             with lock:
-                now = time.time()
-                # 清理窗口外的调用记录
-                while calls and now - calls[0] > per_seconds:
-                    calls.popleft()
+                now = time.monotonic()
+                while reservations and reservations[0] <= now - per_seconds:
+                    reservations.pop(0)
 
-                # 如果超过限额，等待直到下一次可用
-                if len(calls) >= max_calls:
-                    sleep_for = per_seconds - (now - calls[0])
-                    if sleep_for > 0:
-                        time.sleep(sleep_for)
+                active_left = bisect_right(reservations, now - per_seconds)
+                active_right = bisect_right(reservations, now)
+                active_now = active_right - active_left
+                available_now = max(0, max_calls - active_now)
 
-                    # 重新获取当前时间并再次清理已过期记录
-                    now = time.time()
-                    while calls and now - calls[0] > per_seconds:
-                        calls.popleft()
+                scheduled_at = now
+                while True:
+                    left = bisect_right(reservations, scheduled_at - per_seconds)
+                    right = bisect_right(reservations, scheduled_at)
+                    if right - left < max_calls:
+                        break
+                    scheduled_at = reservations[left] + per_seconds
 
-                calls.append(time.time())
+                insort(reservations, scheduled_at)
+                reservation_count = len(reservations)
+
+            logger.debug(
+                'rate_limit[%s]: available_now=%s/%s scheduled_in=%.3fs reservations=%s',
+                func.__name__,
+                available_now,
+                max_calls,
+                max(0.0, scheduled_at - now),
+                reservation_count,
+            )
+
+            sleep_for = scheduled_at - now
+            if sleep_for > 0:
+                time.sleep(sleep_for)
 
             # 调用目标函数，自动重试 429
             while True:

@@ -4,8 +4,8 @@ import pytest
 
 from issue_auth_tool.utils import SCHEMA, edit_json
 
-pytest.skip('skipping this module', allow_module_level=True)  # type: ignore
-
+if __name__ != '__main__':
+    pytest.skip('skipping this module', allow_module_level=True)  # type: ignore
 
 pytestmark = pytest.mark.manual
 
