@@ -1,6 +1,8 @@
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from issue_auth_tool import logger
+
 
 def google_search_snippets(query, api_key, cse_id, num=5):
     service = build('customsearch', 'v1', developerKey=api_key)
@@ -15,7 +17,7 @@ def google_search_snippets(query, api_key, cse_id, num=5):
             .execute()
         )
     except HttpError as e:
-        print('请求出错：', e)
+        logger.error('请求出错： %s', e)
         return []
 
     items = res.get('items', [])

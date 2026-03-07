@@ -22,7 +22,7 @@ from referencing import Registry, Resource
 from referencing.exceptions import NoSuchResource
 from referencing.jsonschema import DRAFT7
 
-from . import logger
+from .. import logger
 
 
 def load_regex(uri: str):

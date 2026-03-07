@@ -2,7 +2,7 @@ from json import dumps
 
 import pytest
 
-from issue_auth_tool.utils import SCHEMA, edit_json
+from issue_auth_tool.utils.util import SCHEMA, edit_json
 
 if __name__ != '__main__':
     pytest.skip('skipping this module', allow_module_level=True)  # type: ignore

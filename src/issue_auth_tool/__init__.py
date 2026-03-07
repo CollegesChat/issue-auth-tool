@@ -1,4 +1,5 @@
 import logging
+from threading import RLock
 
 from rich.logging import RichHandler
 
@@ -9,18 +10,28 @@ try:
 except ImportError:
     pass
 
+console_lock = RLock()
+
+
+class LockedRichHandler(RichHandler):
+    def emit(self, record):
+        with console_lock:
+            super().emit(record)
+
 class InspectLoggerAdapter(logging.LoggerAdapter):
     def debug(self, msg, *args, obj=None, **kwargs):
         super().debug(msg, *args, **kwargs)
 
         if obj is not None and HAS_OBJPRINT:
-            op(obj)
+            with console_lock:
+                op(obj)
 
-def setup_logger()->logging.LoggerAdapter:
+
+def setup_logger() -> logging.LoggerAdapter:
     logger = logging.getLogger('IAT')
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
-    ch = RichHandler(
+    ch = LockedRichHandler(
         rich_tracebacks=True, markup=True, show_time=False, show_path=False
     )
     ch.setFormatter(logging.Formatter('%(message)s'))

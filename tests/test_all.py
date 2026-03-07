@@ -6,7 +6,7 @@ from typing import Literal
 import pytest
 from jsonschema import ValidationError
 
-from issue_auth_tool.utils import validate as schema_validate
+from issue_auth_tool.utils.util import validate as schema_validate
 
 # atexit.register(save_on_exit)
 

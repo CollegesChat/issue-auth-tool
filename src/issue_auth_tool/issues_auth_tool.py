@@ -5,7 +5,7 @@ from json import dumps, loads
 from json.decoder import JSONDecodeError
 from pathlib import Path
 from queue import Queue
-from threading import Lock, Thread
+from threading import Thread
 from typing import Callable, Iterable, Iterator, Never
 
 from github import Auth, Github
@@ -15,13 +15,18 @@ from rich.prompt import Prompt
 
 from issue_auth_tool.types import PostData
 
-from . import logger
+from . import console_lock, logger
 from .settings import config
-from .utils import SCHEMA, edit_json, rate_limit, validate
+from .utils.util import SCHEMA, edit_json, rate_limit, validate
 
 g = Github(auth=Auth.Token(config['secret']['GITHUB_TOKEN']))
 repo = g.get_repo(f'{config["secret"]["OWNER"]}/{config["secret"]["REPO_NAME"]}')
-print(config['secret'])
+logger.debug(
+    '已加载配置: owner=%s repo=%s llm_model=%s',
+    config['secret']['OWNER'],
+    config['secret']['REPO_NAME'],
+    config['secret']['llm']['model'],
+)
 client = OpenAI(
     api_key=config['secret']['llm']['key'], base_url=config['secret']['llm']['server']
 )
@@ -72,7 +77,6 @@ def fetch_issues_and_discussions(
     strip = strip_markdown
     repo_issues = repo.get_issues
     repo_discussions = repo.get_discussions
-
     def iter_issues():
         for issue in repo_issues(state='open'):
             # 过滤 PR
@@ -105,9 +109,9 @@ def fetch_issues_and_discussions(
     if 'discussions' in types:
         producers.append(('discussions', iter_discussions))
     logger.debug(
-        '抓取配置: types=%s fetch_worker_count=%s',
+        '抓取配置: types=%s fetch_worker(s)=%s',
         types,
-        len(producers),
+        [_[0] for _ in producers],
     )
     if not producers:
         return
@@ -199,9 +203,6 @@ def get_llm_response(instructions: str, input: str) -> str | Never:
 
 
 db_path = Path(__file__).parent.parent / 'database'
-prompt_lock = Lock()
-
-
 def process_post(post: PostData) -> None:
     ret_text: str | None = None
     corrected: dict | None = None
@@ -215,7 +216,7 @@ def process_post(post: PostData) -> None:
         logger.debug('LLM 输出校验通过: #%s type=%s', post['num'], result.get('type'))
         result |= {'num': post['num']}
     except (JSONDecodeError, ValidationError) as e:
-        with prompt_lock:
+        with console_lock:
             answer = Prompt.ask(
                 '解析出错，是否人工修改？',
                 default='n',

@@ -1,5 +1,6 @@
 import time
 from importlib import import_module
+from json import dumps, loads
 from queue import Queue
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
@@ -202,3 +203,106 @@ def test_run_processes_posts_with_configured_workers(monkeypatch, tmp_path):
     assert not run_error
     assert max_active == 2
     assert sorted(path.stem for path in tmp_path.glob('*.json')) == ['1', '2', '3']
+
+
+def test_process_post_validation_failure_triggers_manual_edit_fallback(
+    monkeypatch, tmp_path
+):
+    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
+    post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
+    invalid_llm_output = {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']}
+    corrected = {'type': 'invalid', 'reason': 'fixed', 'mcp': []}
+    asked: list[str] = []
+    edit_calls: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
+    monkeypatch.setattr(
+        issues_auth_tool,
+        'get_llm_response',
+        lambda instructions, input: dumps(invalid_llm_output, ensure_ascii=False),
+    )
+    monkeypatch.setattr(
+        issues_auth_tool.Prompt,
+        'ask',
+        lambda *args, **kwargs: asked.append(args[0]) or 'y',
+    )
+
+    def fake_edit_json(editable: str, schema: dict) -> dict:
+        edit_calls.append((editable, schema))
+        return corrected.copy()
+
+    monkeypatch.setattr(issues_auth_tool, 'edit_json', fake_edit_json)
+
+    issues_auth_tool.process_post(post)
+
+    assert asked == ['解析出错，是否人工修改？']
+    assert len(edit_calls) == 1
+    assert loads(edit_calls[0][0]) == invalid_llm_output
+    assert edit_calls[0][1] == issues_auth_tool.SCHEMA['type']
+    assert loads((tmp_path / '1.json').read_text(encoding='utf-8')) == {
+        **corrected,
+        'num': 1,
+    }
+
+
+def test_process_post_validation_failure_can_skip_manual_edit(
+    monkeypatch, tmp_path
+):
+    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
+    post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
+
+    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
+    monkeypatch.setattr(
+        issues_auth_tool,
+        'get_llm_response',
+        lambda instructions, input: dumps(
+            {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']},
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(issues_auth_tool.Prompt, 'ask', lambda *args, **kwargs: 'n')
+
+    edit_called = False
+
+    def fake_edit_json(editable: str, schema: dict) -> dict:
+        nonlocal edit_called
+        edit_called = True
+        return {'type': 'invalid', 'reason': 'fixed', 'mcp': []}
+
+    monkeypatch.setattr(issues_auth_tool, 'edit_json', fake_edit_json)
+
+    issues_auth_tool.process_post(post)
+
+    assert not edit_called
+    assert not (tmp_path / '1.json').exists()
+
+
+def test_process_post_prompt_waits_for_console_lock(monkeypatch, tmp_path):
+    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
+    post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
+    prompt_called = Event()
+
+    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
+    monkeypatch.setattr(
+        issues_auth_tool,
+        'get_llm_response',
+        lambda instructions, input: dumps(
+            {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']},
+            ensure_ascii=False,
+        ),
+    )
+    monkeypatch.setattr(
+        issues_auth_tool.Prompt,
+        'ask',
+        lambda *args, **kwargs: prompt_called.set() or 'n',
+    )
+
+    worker = Thread(target=issues_auth_tool.process_post, args=(post,))
+
+    with issues_auth_tool.console_lock:
+        worker.start()
+        assert not prompt_called.wait(0.2)
+
+    worker.join(1)
+
+    assert prompt_called.is_set()

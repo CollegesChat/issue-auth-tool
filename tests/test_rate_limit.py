@@ -1,6 +1,6 @@
 import threading
 
-import issue_auth_tool.utils as utils
+import issue_auth_tool.utils.util as utils
 
 
 class FakeClock:
