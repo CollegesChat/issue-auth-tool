@@ -61,6 +61,6 @@ outdate ID [issueId...]
 alias oldName newName [issueId...]
 """
 google_query = "+{u1} +{u2} (site:.edu.cn OR site:.gov.cn) "
-[[settings.mcp]]
+[settings.mcp]
 google = { cx = '', key = '' }
 viewer = { config = '' }

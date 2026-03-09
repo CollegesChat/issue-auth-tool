@@ -35,7 +35,7 @@ class SettingConfig(TypedDict):
     prompt_type: str
     prompt_judgement: str
     google_query: str
-    mcp: list[MCPConfig]
+    mcp: MCPConfig
 
 
 class AppConfig(TypedDict):
