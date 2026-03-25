@@ -6,7 +6,7 @@ from json.decoder import JSONDecodeError
 from pathlib import Path
 from queue import Queue
 from threading import Thread
-from typing import Callable, Iterable, Iterator, Never, cast
+from typing import Callable, Iterable, Iterator, cast
 
 from github import Auth, Github
 from jsonschema import ValidationError
@@ -163,9 +163,10 @@ def fetch_issues_and_discussions(
         raise errors[0]
 
 
-def handle_instruction(instructions: list[str]) -> str | Never:  # type: ignore
+def handle_instruction(instructions: list[str]) -> str:
     from .mcp.google import get_results
     from .mcp.viewer import view
+
     for instr in instructions:
         instr = shlex.split(instr)
         match instr[0]:
@@ -179,6 +180,7 @@ def handle_instruction(instructions: list[str]) -> str | Never:  # type: ignore
                 return view(instr[1])
             case _:
                 raise ValueError(f'未知指令: {instr[0]}')
+    return f'错误{",".join(instructions)}'
 
 
 CONTENT = """
@@ -189,7 +191,7 @@ CONTENT = """
 
 
 @rate_limit(setting['rate_per_minute'], 60)
-def get_llm_response(instructions: str, input: str) -> str | Never:
+def get_llm_response(instructions: str, input: str) -> str:
     ret = (
         client.chat.completions
         .create(
@@ -284,9 +286,7 @@ def process_post(
         ret_text: str = ''
         try:
             logger.debug('开始处理帖子: #%s %s', post['num'], post['title'])
-            ret_text = cast(
-                str, get_llm_response(setting['prompt_type'], CONTENT.format(**post))
-            )
+            ret_text = get_llm_response(setting['prompt_type'], CONTENT.format(**post))
 
             logger.debug('LLM 原始输出: #%s %s', post['num'], ret_text)
             result: dict = cast(dict, loads(ret_text))
@@ -371,7 +371,7 @@ def run():
             except BaseException as exc:
                 logger.error('串行处理帖子失败: %s', exc)
                 error_queue.append(exc)
-    logger.debug('可用報告：',obj=all_valid_reports)
+    logger.debug('可用報告：', obj=all_valid_reports)
     if error_queue:
         raise error_queue[0]
 

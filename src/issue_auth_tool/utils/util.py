@@ -5,7 +5,7 @@ from bisect import bisect_right, insort
 from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable, ParamSpec, TypeVar
 
 from jsonschema.exceptions import ValidationError
 from jsonschema.validators import validator_for
@@ -23,6 +23,9 @@ from referencing.exceptions import NoSuchResource
 from referencing.jsonschema import DRAFT7
 
 from .. import logger
+
+P = ParamSpec('P')
+R = TypeVar('R')
 
 SRC = Path(__file__).parent.parent
 def load_regex(uri: str):
@@ -139,7 +142,9 @@ def edit_json(json_data: str, validator: dict) -> None | dict:
         return None
 
 
-def rate_limit(max_calls: int, per_seconds: float):
+def rate_limit(
+    max_calls: int, per_seconds: float
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
     通用限速装饰器：
     - max_calls：时间窗口内最多调用次数。如果 max_calls=0，则禁用限速。
@@ -149,7 +154,7 @@ def rate_limit(max_calls: int, per_seconds: float):
     # max_calls=0 时，直接返回一个透传装饰器
     if max_calls <= 0:
 
-        def bypass_decorator(func):
+        def bypass_decorator(func: Callable[P, R]) -> Callable[P, R]:
             return func
 
         return bypass_decorator
@@ -159,9 +164,9 @@ def rate_limit(max_calls: int, per_seconds: float):
     reservations: list[float] = []
     lock = threading.Lock()
 
-    def decorator(func):
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             with lock:
                 now = time.monotonic()
                 while reservations and reservations[0] <= now - per_seconds:
@@ -183,9 +188,10 @@ def rate_limit(max_calls: int, per_seconds: float):
                 insort(reservations, scheduled_at)
                 reservation_count = len(reservations)
 
+            func_name = getattr(func, '__name__', repr(func))
             logger.debug(
                 'rate_limit[%s]: available_now=%s/%s scheduled_in=%.3fs reservations=%s',
-                func.__name__,
+                func_name,
                 available_now,
                 max_calls,
                 max(0.0, scheduled_at - now),
