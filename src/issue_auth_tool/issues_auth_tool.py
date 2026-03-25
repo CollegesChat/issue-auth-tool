@@ -1,7 +1,6 @@
 import re
 import shlex
 from contextlib import suppress
-from dataclasses import dataclass
 from json import dumps, loads
 from json.decoder import JSONDecodeError
 from pathlib import Path
@@ -14,7 +13,7 @@ from jsonschema import ValidationError
 from openai import OpenAI
 from rich.prompt import Prompt
 
-from issue_auth_tool.types import PostData
+from issue_auth_tool.types import DeferredPost, PostData, ValidReport
 
 from . import logger
 from .settings import config
@@ -32,7 +31,7 @@ client = OpenAI(
     api_key=config['secret']['llm']['key'], base_url=config['secret']['llm']['server']
 )
 setting = config['settings']
-
+all_valid_reports: list[ValidReport] = []
 
 MARKDOWN_CLEANER = re.compile(
     r"""
@@ -78,6 +77,7 @@ def fetch_issues_and_discussions(
     strip = strip_markdown
     repo_issues = repo.get_issues
     repo_discussions = repo.get_discussions
+
     def iter_issues():
         for issue in repo_issues(state='open'):
             # 过滤 PR
@@ -93,7 +93,7 @@ def fetch_issues_and_discussions(
 
     def iter_discussions():
         for disc in repo_discussions(
-            discussion_graphql_schema='id number title body', # TODO: 過濾指定id的討論
+            discussion_graphql_schema='id number title body',  # TODO: 過濾指定id的討論
             answered=False,
         ):
             if disc.number in ignore:
@@ -163,15 +163,22 @@ def fetch_issues_and_discussions(
         raise errors[0]
 
 
-def handle_instruction(instructions: list[str]) -> str:
+def handle_instruction(instructions: list[str]) -> str | Never:  # type: ignore
+    from .mcp.google import get_results
+    from .mcp.viewer import view
     for instr in instructions:
         instr = shlex.split(instr)
         match instr[0]:
             case 'google':
-                pass
+                return get_results(
+                    instr[1],
+                    setting['mcp']['google']['key'],
+                    setting['mcp']['google']['cx'],
+                )
             case 'view':
-                pass
-    return ''
+                return view(instr[1])
+            case _:
+                raise ValueError(f'未知指令: {instr[0]}')
 
 
 CONTENT = """
@@ -204,14 +211,7 @@ def get_llm_response(instructions: str, input: str) -> str | Never:
 db_path = Path(__file__).parent.parent / 'database'
 
 
-@dataclass(slots=True)
-class DeferredPost:
-    post: PostData
-    ret_text: str
-
-
-def build_editable_text(ret_text: str ) -> str:
-
+def build_editable_text(ret_text: str) -> str:
 
     try:
         return dumps(loads(ret_text), indent=2, ensure_ascii=False)
@@ -281,13 +281,15 @@ def process_post(
     failure = deferred_failure
 
     if failure is None:
-        ret_text: str =''
+        ret_text: str = ''
         try:
             logger.debug('开始处理帖子: #%s %s', post['num'], post['title'])
-            ret_text = cast(str,get_llm_response(setting['prompt_type'], CONTENT.format(**post)))
+            ret_text = cast(
+                str, get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            )
 
             logger.debug('LLM 原始输出: #%s %s', post['num'], ret_text)
-            result: dict = loads(ret_text)
+            result: dict = cast(dict, loads(ret_text))
             validate(instance=result, schema=SCHEMA['type'])
             logger.debug(
                 'LLM 输出校验通过: #%s type=%s', post['num'], result.get('type')
@@ -308,8 +310,15 @@ def process_post(
         if output is None:
             return None
 
-    save_post_output(post, output) # type: ignore
-    return None
+    save_post_output(post, output)  # type: ignore
+    if output is not None and output['type'] != 'invalid':
+        all_valid_reports.append(
+            ValidReport(mcp=output['mcp'], reason=output['reason'], type=output['type'])
+        )
+
+
+def process_report(report: ValidReport) -> None:
+    pass
 
 
 def run():
@@ -362,7 +371,7 @@ def run():
             except BaseException as exc:
                 logger.error('串行处理帖子失败: %s', exc)
                 error_queue.append(exc)
-
+    logger.debug('可用報告：',obj=all_valid_reports)
     if error_queue:
         raise error_queue[0]
 

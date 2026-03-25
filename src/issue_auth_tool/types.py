@@ -1,4 +1,5 @@
-from typing import NotRequired, TypedDict
+from dataclasses import dataclass
+from typing import Literal, NotRequired, TypedDict
 
 
 class LLMConfig(TypedDict):
@@ -46,3 +47,12 @@ class PostData(TypedDict):
     title: str
     num: int
     text: str
+@dataclass(slots=True)
+class DeferredPost:
+    post: PostData
+    ret_text: str
+
+class ValidReport(TypedDict):
+    type: Literal['outdated' , 'evil' , 'alias']
+    reason: str
+    mcp: list[str]
