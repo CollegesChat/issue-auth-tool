@@ -10,6 +10,7 @@ dependencies = [
     "openai>=1.108.1",
     "pygithub>=2.8.1",
     "referencing>=0.37.0",
+    "socksio>=1.0.0",
     "uniinfo-editor @ git+https://github.com/CollegesChat/uniinfo-editor",
 ]
 
@@ -26,9 +27,9 @@ root = ['src']
 [dependency-groups]
 dev = [
     "objprint>=0.3.0",
-    "pytest>=8.4.2",
+    "pytest>=9",
 ]
-[tool.pytests]
+[tool.pytest.ini_options]
 markers = [
-    "manual: tests that should only be run manually"
+    "manual: tests that should only be run manually (require GITHUB_TOKEN and LLM API)"
 ]

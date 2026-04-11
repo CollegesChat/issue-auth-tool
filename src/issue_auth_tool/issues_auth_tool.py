@@ -31,7 +31,7 @@ client = OpenAI(
     api_key=config['secret']['llm']['key'], base_url=config['secret']['llm']['server']
 )
 setting = config['settings']
-all_valid_reports: list[ValidReport] = []
+all_valid_reports: dict[int, ValidReport] = {}
 
 MARKDOWN_CLEANER = re.compile(
     r"""
@@ -167,20 +167,23 @@ def handle_instruction(instructions: list[str]) -> str:
     from .mcp.google import get_results
     from .mcp.viewer import view
 
+    results = []
     for instr in instructions:
-        instr = shlex.split(instr)
-        match instr[0]:
+        parts = shlex.split(instr)
+        match parts[0]:
             case 'google':
-                return get_results(
-                    instr[1],
-                    setting['mcp']['google']['key'],
-                    setting['mcp']['google']['cx'],
+                results.append(
+                    get_results(
+                        parts[1],
+                        setting['mcp']['google']['key'],
+                        setting['mcp']['google']['cx'],
+                    )
                 )
             case 'view':
-                return view(instr[1])
+                results.append(view(parts[1]))
             case _:
-                raise ValueError(f'未知指令: {instr[0]}')
-    return f'错误{",".join(instructions)}'
+                raise ValueError(f'未知指令: {parts[0]}')
+    return '\n\n---\n\n'.join(results)
 
 
 CONTENT = """
@@ -192,14 +195,19 @@ CONTENT = """
 
 @rate_limit(setting['rate_per_minute'], 60)
 def get_llm_response(instructions: str, input: str) -> str:
+    model = config['secret']['llm']['model']
+    extra: dict = {}
+    if model.startswith('qwen'):
+        extra['extra_body'] = {'enable_thinking': False}
     ret = (
         client.chat.completions
         .create(
-            model=config['secret']['llm']['model'],
+            model=model,
             messages=[
                 {'role': 'system', 'content': instructions},
                 {'role': 'user', 'content': input},
             ],
+            **extra,
         )
         .choices[0]
         .message.content
@@ -312,13 +320,68 @@ def process_post(
 
     save_post_output(post, output)  # type: ignore
     if output is not None and output['type'] != 'invalid':
-        all_valid_reports.append(
-            ValidReport(mcp=output['mcp'], reason=output['reason'], type=output['type'])
+        all_valid_reports[post['num']] = ValidReport(
+            mcp=output['mcp'], reason=output['reason'], type=output['type']
         )
 
 
-def process_report(report: ValidReport) -> None:
-    pass
+def _execute_final_command(cmd: str, issue_id: int) -> None:
+    """解析 LLM 返回的最终指令并执行，自动追加 issue_id。"""
+    from .mcp.viewer import helper
+
+    parts = shlex.split(cmd)
+    if not parts:
+        return
+
+    match parts[0]:
+        case 'del':
+            # del ID [issueId...]
+            helper.do_del(f'{parts[1]} {issue_id}')
+        case 'outdate':
+            # outdate ID [issueId...]
+            helper.do_outdate(f'{parts[1]} {issue_id}')
+        case 'alias':
+            # alias oldName newName [issueId...]
+            helper.do_alias(f'{parts[1]} {parts[2]} {issue_id}')
+        case _:
+            logger.warning('未知的最终决策指令: %s', parts[0])
+
+
+def process_report(num: int, report: ValidReport) -> None:
+    # Step 3: 执行 MCP 指令获取上下文信息
+    logger.info('开始处理报告 #%s: type=%s reason=%s mcp=%s',
+                num, report['type'], report['reason'], report['mcp'])
+    mcp_context = handle_instruction(report['mcp'])
+    logger.debug('MCP 执行结果: %s', mcp_context)
+
+    # Step 4: 合并信息，发送 LLM 做二次判定
+    judgement_input = (
+        setting['prompt_judgement'].format(
+            type=report['type'],
+            reasons=report['reason'],
+        )
+        + f'\n\nMCP 获取的补充信息：\n{mcp_context}'
+    )
+    ret_text = get_llm_response(judgement_input, '')
+
+    # 解析并验证输出
+    try:
+        result = loads(ret_text)
+        validate(instance=result, schema=SCHEMA['judgement'])
+    except (JSONDecodeError, ValidationError) as e:
+        logger.error(
+            '二次判定输出无效 #%s (type=%s): %s\n原始输出: %s',
+            num, report['type'], e, ret_text
+        )
+        return
+
+    # Step 5: 执行最终决策或标记为无需处理
+    if result is None:
+        logger.info('二次判定结果: 无需处理 #%s (type=%s)', num, report['type'])
+    else:
+        for cmd in result:
+            logger.info('最终决策 #%s: %s', num, cmd)
+            _execute_final_command(cmd, num)
 
 
 def run():
@@ -371,6 +434,22 @@ def run():
             except BaseException as exc:
                 logger.error('串行处理帖子失败: %s', exc)
                 error_queue.append(exc)
+
+    # 处理所有有效报告的二次判定循环
+    if all_valid_reports:
+        logger.info('开始处理 %s 个有效报告的二次判定。', len(all_valid_reports))
+        for num, report in all_valid_reports.items():
+            try:
+                process_report(num, report)
+            except BaseException as exc:
+                logger.error('处理报告失败: %s', exc)
+                error_queue.append(exc)
+
+    # 生成 changelog
+    if all_valid_reports:
+        from .mcp.viewer import helper
+        helper.do_generate()
+
     logger.debug('可用報告：', obj=all_valid_reports)
     if error_queue:
         raise error_queue[0]

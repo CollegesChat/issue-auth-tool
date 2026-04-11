@@ -42,7 +42,7 @@ prompt_type = """
 prompt_judgement = """
 以下是你需要验证的 Issue：
 其被判定的类型为 {type}
-（`outdate`：内容过时；`del`：恶意或无效回答；`alias`：学校更名）
+（`outdated`：内容过时；`evil`：恶意或无效回答；`alias`：学校更名）
 
 以下是判定理由：
 {reasons}
@@ -54,11 +54,11 @@ prompt_judgement = """
 * 返回一个 `list[str]`，其中每个元素为一条指令；
 * 若此反馈无效或无需处理，返回 `null`。
 
-允许的指令格式：
+允许的指令格式（不要带 issueId，程序会自动追加）：
 
-del ID [issueId...]
-outdate ID [issueId...]
-alias oldName newName [issueId...]
+del ID
+outdate ID
+alias oldName newName
 """
 google_query = "+{u1} +{u2} (site:.edu.cn OR site:.gov.cn) "
 [settings.mcp]

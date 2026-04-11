@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 .history
 .qodo
+env.sh
+.qwen
 # C extensions
 *.so
 database/
