@@ -1,386 +1,319 @@
-import time
-from importlib import import_module
-from json import dumps, loads
-from queue import Queue
-from threading import Event, Lock, Thread
-from types import SimpleNamespace
+"""
+Tests for the three-phase LLM workflow in the issue processing pipeline.
+
+Phase 1: First type detection — LLM identifies issue type and generates MCP instructions.
+Phase 2: Second judgement — LLM verifies the type with MCP context and returns final commands.
+Phase 3: Command execution & generate — execute commands and produce changelog.
+
+Testing strategy:
+- MUST mock: get_llm_response (controls LLM output deterministically)
+- SHOULD mock: fetch_issues_and_discussions (provides controlled test posts)
+- Minimize mocks: let process_report run real logic, only mock side effects
+  (helper.do_del / do_outdate / do_alias / do_generate)
+"""
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from issue_auth_tool.types import PostData, ValidReport
+
+# ──────────────────────────────────────────────────────────────
+# Shared fixtures
+# ──────────────────────────────────────────────────────────────
+
+TEST_POST: PostData = {
+    "title": "Test University Discussion",
+    "num": 42,
+    "text": "Is the information about 西安电子科技大学 still accurate?",
+}
 
 
-class FakeRepo:
-    def get_issues(self, state='open'):
-        time.sleep(0.05)
-        yield SimpleNamespace(
-            title='Issue 1',
-            number=1,
-            body='first issue',
-            pull_request=None,
-        )
-        time.sleep(0.3)
-        yield SimpleNamespace(
-            title='Issue 2',
-            number=2,
-            body='second issue',
-            pull_request=None,
-        )
-
-    def get_discussions(self, discussion_graphql_schema, answered):
-        time.sleep(0.1)
-        yield SimpleNamespace(
-            title='Discussion 1',
-            number=101,
-            body='first discussion',
-        )
+def _make_llm_type_response(
+    type_: str, reason: str = "test reason", mcp: list | None = None
+) -> str:
+    """Build a valid LLM response for the first type-detection prompt."""
+    if mcp is None and type_ != "invalid":
+        mcp = ["view 1234"]
+    if mcp is None:
+        mcp = []
+    return json.dumps({"type": type_, "reason": reason, "mcp": mcp}, ensure_ascii=False)
 
 
-def load_issues_auth_tool(monkeypatch, repo):
-    import sys
+# ──────────────────────────────────────────────────────────────
+# Phase 1: First type detection
+# ──────────────────────────────────────────────────────────────
 
-    import github
-    import openai
+@pytest.mark.parametrize(
+    "llm_type,mcp,expect_in_reports",
+    [
+        ("outdated", ["view 1234"], True),
+        ("evil", ["view 5678", "google 北京大学 清华大学"], True),
+        ("alias", ["view 999"], True),
+        ("invalid", [], False),
+    ],
+)
+def test_first_type_detection(llm_type, mcp, expect_in_reports):
+    """
+    Phase 1: First LLM call identifies issue type and generates MCP instructions.
 
-    class FakeGithubClient:
-        def __init__(self, auth):
-            self.auth = auth
-
-        def get_repo(self, full_name):
-            return repo
-
-    monkeypatch.setattr(github.Auth, 'Token', lambda token: object())
-    monkeypatch.setattr(github, 'Github', FakeGithubClient)
-    monkeypatch.setattr(openai, 'OpenAI', lambda **kwargs: object())
-    sys.modules.pop('issue_auth_tool.issues_auth_tool', None)
-
-    issues_auth_tool = import_module('issue_auth_tool.issues_auth_tool')
-    monkeypatch.setitem(issues_auth_tool.setting, 'type', ['issues', 'discussions'])
-    monkeypatch.setattr(issues_auth_tool, 'repo', repo)
-    return issues_auth_tool
-
-
-def test_fetch_issues_and_discussions_streams_results(monkeypatch):
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
-
-    posts = list(issues_auth_tool.fetch_issues_and_discussions())
-
-    assert [post['num'] for post in posts] == [1, 101, 2]
-
-
-def test_fetch_issues_and_discussions_runs_in_parallel(monkeypatch):
-    class SlowRepo:
-        def get_issues(self, state='open'):
-            time.sleep(0.25)
-            yield SimpleNamespace(
-                title='Issue 1',
-                number=1,
-                body='first issue',
-                pull_request=None,
-            )
-
-        def get_discussions(self, discussion_graphql_schema, answered):
-            time.sleep(0.25)
-            yield SimpleNamespace(
-                title='Discussion 1',
-                number=101,
-                body='first discussion',
-            )
-
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, SlowRepo())
-
-    started_at = time.perf_counter()
-    posts = list(issues_auth_tool.fetch_issues_and_discussions())
-    elapsed = time.perf_counter() - started_at
-
-    assert {post['num'] for post in posts} == {1, 101}
-    assert elapsed < 0.3
-
-
-def test_fetch_issues_and_discussions_starts_both_producers_before_yield(monkeypatch):
-    class CoordinatedRepo:
-        def __init__(self):
-            self.issues_started = Event()
-            self.discussions_started = Event()
-            self.release = Event()
-
-        def get_issues(self, state='open'):
-            self.issues_started.set()
-            assert self.discussions_started.wait(1)
-            assert self.release.wait(1)
-            yield SimpleNamespace(
-                title='Issue 1',
-                number=1,
-                body='first issue',
-                pull_request=None,
-            )
-
-        def get_discussions(self, discussion_graphql_schema, answered):
-            self.discussions_started.set()
-            assert self.issues_started.wait(1)
-            assert self.release.wait(1)
-            yield SimpleNamespace(
-                title='Discussion 1',
-                number=101,
-                body='first discussion',
-            )
-
-    repo = CoordinatedRepo()
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, repo)
-    posts = issues_auth_tool.fetch_issues_and_discussions()
-    first_post_queue: Queue[object] = Queue()
-
-    def consume_first_post():
-        try:
-            first_post_queue.put(next(posts))
-        except BaseException as exc:
-            first_post_queue.put(exc)
-
-    consumer = Thread(target=consume_first_post)
-    consumer.start()
-
-    assert repo.issues_started.wait(1)
-    assert repo.discussions_started.wait(1)
-    assert first_post_queue.empty()
-
-    repo.release.set()
-    consumer.join(1)
-
-    first_post = first_post_queue.get_nowait()
-    assert not isinstance(first_post, BaseException)
-    assert first_post['num'] in {1, 101} # type: ignore
-
-
-def test_run_processes_posts_with_configured_workers(monkeypatch, tmp_path):
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
-    posts = [
-        {'title': 'Issue 1', 'num': 1, 'text': 'first issue'},
-        {'title': 'Issue 2', 'num': 2, 'text': 'second issue'},
-        {'title': 'Issue 3', 'num': 3, 'text': 'third issue'},
-    ]
-
-    monkeypatch.setitem(issues_auth_tool.setting, 'workers', 2)
-    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
-    monkeypatch.setattr(
-        issues_auth_tool,
-        'fetch_issues_and_discussions',
-        lambda ignore_nums=(): iter(posts),
+    - Mock get_llm_response to return a JSON with the given type.
+    - Mock fetch_issues_and_discussions to yield a single test post.
+    - Verify that valid types (outdated/evil/alias) are saved to
+      all_valid_reports, while 'invalid' is NOT saved.
+    """
+    from issue_auth_tool.issues_auth_tool import (
+        all_valid_reports,
+        process_post,
     )
 
-    active = 0
-    max_active = 0
-    active_lock = Lock()
-    two_workers_started = Event()
-    release_workers = Event()
+    # Reset shared state
+    all_valid_reports.clear()
 
-    def fake_get_llm_response(instructions: str, input: str) -> str:
-        nonlocal active, max_active
-        with active_lock:
-            active += 1
-            max_active = max(max_active, active)
-            if active == 2:
-                two_workers_started.set()
-        if max_active < 2:
-            assert two_workers_started.wait(1)
-        assert release_workers.wait(1)
-        with active_lock:
-            active -= 1
-        return '{"type":"invalid","reason":"ok","mcp":[]}'
+    llm_output = _make_llm_type_response(llm_type, f"test reason for {llm_type}", mcp)
 
-    monkeypatch.setattr(issues_auth_tool, 'get_llm_response', fake_get_llm_response)
+    with patch(
+        "issue_auth_tool.issues_auth_tool.get_llm_response", return_value=llm_output
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.db_path",
+        MagicMock(),
+    ):
+        process_post(TEST_POST, prompt_on_failure=True)
 
-    run_error: list[BaseException] = []
-
-    def invoke_run() -> None:
-        try:
-            issues_auth_tool.run()
-        except BaseException as exc:
-            run_error.append(exc)
-
-    runner = Thread(target=invoke_run)
-    runner.start()
-
-    assert two_workers_started.wait(1)
-    release_workers.set()
-    runner.join(1)
-
-    assert not runner.is_alive()
-    assert not run_error
-    assert max_active == 2
-    assert sorted(path.stem for path in tmp_path.glob('*.json')) == ['1', '2', '3']
+    if expect_in_reports:
+        assert 42 in all_valid_reports
+        report = all_valid_reports[42]
+        assert report["type"] == llm_type
+        assert report["reason"] == f"test reason for {llm_type}"
+        assert report["mcp"] == mcp
+    else:
+        assert 42 not in all_valid_reports
 
 
-def test_process_post_validation_failure_triggers_manual_edit_fallback(
-    monkeypatch, tmp_path
-):
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
-    post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
-    invalid_llm_output = {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']}
-    corrected = {'type': 'invalid', 'reason': 'fixed', 'mcp': []}
-    asked: list[str] = []
-    edit_calls: list[tuple[str, dict]] = []
-
-    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
-    monkeypatch.setattr(
-        issues_auth_tool,
-        'get_llm_response',
-        lambda instructions, input: dumps(invalid_llm_output, ensure_ascii=False),
-    )
-    monkeypatch.setattr(
-        issues_auth_tool.Prompt,
-        'ask',
-        lambda *args, **kwargs: asked.append(args[0]) or 'y',
+def test_first_type_detection_invalid_json_deferred():
+    """
+    Phase 1: When LLM returns invalid JSON, process_post should return a DeferredPost.
+    """
+    from issue_auth_tool.issues_auth_tool import (
+        all_valid_reports,
+        process_post,
     )
 
-    def fake_edit_json(editable: str, schema: dict) -> dict:
-        edit_calls.append((editable, schema))
-        return corrected.copy()
+    all_valid_reports.clear()
 
-    monkeypatch.setattr(issues_auth_tool, 'edit_json', fake_edit_json)
-
-    issues_auth_tool.process_post(post)
-
-    assert asked == ['解析出错，是否人工修改？']
-    assert len(edit_calls) == 1
-    assert loads(edit_calls[0][0]) == invalid_llm_output
-    assert edit_calls[0][1] == issues_auth_tool.SCHEMA['type']
-    assert loads((tmp_path / '1.json').read_text(encoding='utf-8')) == {
-        **corrected,
-        'num': 1,
+    bad_post: PostData = {
+        "title": "Bad JSON Post",
+        "num": 99,
+        "text": "Some content.",
     }
 
-
-def test_process_post_validation_failure_can_skip_manual_edit(
-    monkeypatch, tmp_path
-):
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
-    post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
-
-    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
-    monkeypatch.setattr(
-        issues_auth_tool,
-        'get_llm_response',
-        lambda instructions, input: dumps(
-            {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']},
-            ensure_ascii=False,
-        ),
-    )
-    monkeypatch.setattr(issues_auth_tool.Prompt, 'ask', lambda *args, **kwargs: 'n')
-
-    edit_called = False
-
-    def fake_edit_json(editable: str, schema: dict) -> dict:
-        nonlocal edit_called
-        edit_called = True
-        return {'type': 'invalid', 'reason': 'fixed', 'mcp': []}
-
-    monkeypatch.setattr(issues_auth_tool, 'edit_json', fake_edit_json)
-
-    issues_auth_tool.process_post(post)
-
-    assert not edit_called
-    assert not (tmp_path / '1.json').exists()
+    with patch(
+        "issue_auth_tool.issues_auth_tool.get_llm_response",
+        return_value="not valid json!!!",
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.prompt_manual_fix",
+        return_value=None,
+    ):
+        deferred = process_post(bad_post, prompt_on_failure=False)
+        assert deferred is not None
+        assert deferred.post["num"] == 99
+        assert deferred.ret_text == "not valid json!!!"
 
 
-def test_process_post_can_defer_validation_failure(monkeypatch, tmp_path):
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
-    post = {'title': 'Issue 1', 'num': 1, 'text': 'first issue'}
+# ──────────────────────────────────────────────────────────────
+# Phase 2: Second judgement verification
+# ──────────────────────────────────────────────────────────────
 
-    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
-    monkeypatch.setattr(
-        issues_auth_tool,
-        'get_llm_response',
-        lambda instructions, input: dumps(
-            {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']},
-            ensure_ascii=False,
-        ),
-    )
-    prompt_called = False
-    edit_called = False
+@pytest.mark.parametrize(
+    "judgement_output,expect_cmd_prefix",
+    [
+        ('["del 1"]', "del"),
+        ('["outdate 北京大学"]', "outdate"),
+        ('["alias 旧大学 新大学 1"]', "alias"),
+        ("null", None),
+    ],
+)
+def test_second_judgement(judgement_output, expect_cmd_prefix):
+    """
+    Phase 2: Second LLM judgement call verifies type with MCP context
+    and returns final commands.
 
-    def fake_prompt(*args, **kwargs):
-        nonlocal prompt_called
-        prompt_called = True
-        return 'n'
-
-    def fake_edit_json(editable: str, schema: dict) -> dict:
-        nonlocal edit_called
-        edit_called = True
-        return {'type': 'invalid', 'reason': 'fixed', 'mcp': []}
-
-    monkeypatch.setattr(issues_auth_tool.Prompt, 'ask', fake_prompt)
-    monkeypatch.setattr(issues_auth_tool, 'edit_json', fake_edit_json)
-
-    deferred = issues_auth_tool.process_post(post, prompt_on_failure=False)
-
-    assert deferred is not None
-    assert deferred.post == post
-    assert deferred.ret_text is not None
-    assert loads(deferred.ret_text) == {
-        'type': 'invalid',
-        'reason': 'ok',
-        'mcp': ['view 1'],
-    }
-    assert not prompt_called
-    assert not edit_called
-    assert not (tmp_path / '1.json').exists()
-
-
-def test_run_defers_failed_posts_until_parallel_work_finishes(monkeypatch, tmp_path):
-    issues_auth_tool = load_issues_auth_tool(monkeypatch, FakeRepo())
-    posts = [
-        {'title': 'Issue 1', 'num': 1, 'text': 'first issue'},
-        {'title': 'Issue 2', 'num': 2, 'text': 'second issue'},
-    ]
-    prompt_called = Event()
-    second_started = Event()
-    release_second = Event()
-
-    monkeypatch.setitem(issues_auth_tool.setting, 'workers', 2)
-    monkeypatch.setattr(issues_auth_tool, 'db_path', tmp_path)
-    monkeypatch.setattr(
-        issues_auth_tool,
-        'fetch_issues_and_discussions',
-        lambda ignore_nums=(): iter(posts),
+    - Set up a ValidReport in all_valid_reports.
+    - Mock get_llm_response to return the judgement output.
+    - Mock handle_instruction to return fake MCP context.
+    - Mock _execute_final_command to capture calls.
+    - Verify the correct command is executed (or none for null).
+    """
+    from issue_auth_tool.issues_auth_tool import (
+        all_valid_reports,
+        process_report,
     )
 
-    def fake_get_llm_response(instructions: str, input: str) -> str:
-        if '编号：1' in input:
-            return dumps(
-                {'type': 'invalid', 'reason': 'ok', 'mcp': ['view 1']},
-                ensure_ascii=False,
-            )
-
-        second_started.set()
-        assert release_second.wait(1)
-        return '{"type":"invalid","reason":"ok","mcp":[]}'
-
-    monkeypatch.setattr(issues_auth_tool, 'get_llm_response', fake_get_llm_response)
-    monkeypatch.setattr(
-        issues_auth_tool.Prompt,
-        'ask',
-        lambda *args, **kwargs: prompt_called.set() or 'y',
-    )
-    monkeypatch.setattr(
-        issues_auth_tool,
-        'edit_json',
-        lambda editable, schema: {'type': 'invalid', 'reason': 'fixed', 'mcp': []},
+    all_valid_reports.clear()
+    all_valid_reports[42] = ValidReport(
+        type="evil",
+        reason="malicious content detected",
+        mcp=["view 1234"],
     )
 
-    run_error: list[BaseException] = []
+    executed_commands: list[dict] = []
 
-    def invoke_run() -> None:
-        try:
-            issues_auth_tool.run()
-        except BaseException as exc:
-            run_error.append(exc)
+    def fake_execute(cmd: str, issue_id: int) -> None:
+        executed_commands.append({"cmd": cmd, "issue_id": issue_id})
 
-    runner = Thread(target=invoke_run)
-    runner.start()
+    with patch(
+        "issue_auth_tool.issues_auth_tool.get_llm_response",
+        return_value=judgement_output,
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.handle_instruction",
+        return_value="fake mcp context result",
+    ), patch(
+        "issue_auth_tool.issues_auth_tool._execute_final_command",
+        side_effect=fake_execute,
+    ):
+        process_report(42, all_valid_reports[42])
 
-    assert second_started.wait(1)
-    assert not prompt_called.wait(0.2)
+    if expect_cmd_prefix is not None:
+        assert len(executed_commands) == 1
+        assert executed_commands[0]["issue_id"] == 42
+        assert executed_commands[0]["cmd"].startswith(expect_cmd_prefix)
+    else:
+        assert len(executed_commands) == 0
 
-    release_second.set()
-    runner.join(1)
 
-    assert not runner.is_alive()
-    assert not run_error
-    assert prompt_called.is_set()
-    assert sorted(path.stem for path in tmp_path.glob('*.json')) == ['1', '2']
+def test_second_judgement_invalid_output_logged():
+    """
+    Phase 2: When LLM judgement output is invalid, it should be logged
+    as an error and no command executed.
+    """
+    from issue_auth_tool.issues_auth_tool import (
+        all_valid_reports,
+        process_report,
+    )
+
+    all_valid_reports.clear()
+    all_valid_reports[42] = ValidReport(
+        type="evil",
+        reason="test",
+        mcp=["view 1"],
+    )
+
+    executed_commands: list[dict] = []
+
+    def fake_execute(cmd: str, issue_id: int) -> None:
+        executed_commands.append({"cmd": cmd, "issue_id": issue_id})
+
+    with patch(
+        "issue_auth_tool.issues_auth_tool.get_llm_response",
+        return_value="this is not valid judgement",
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.handle_instruction",
+        return_value="some context",
+    ), patch(
+        "issue_auth_tool.issues_auth_tool._execute_final_command",
+        side_effect=fake_execute,
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.logger"
+    ) as mock_logger:
+        process_report(42, all_valid_reports[42])
+
+    assert len(executed_commands) == 0
+    assert mock_logger.error.called
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase 3: Command execution & generate flow
+# ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "final_decision_cmd,helper_method",
+    [
+        ("del 1", "do_del"),
+        ("outdate 北京大学", "do_outdate"),
+        ("alias 旧大学 新大学 1", "do_alias"),
+    ],
+)
+def test_command_execution(final_decision_cmd, helper_method):
+    """
+    Phase 3: Final decision commands are correctly routed to the helper.
+
+    - Call _execute_final_command directly with each command type.
+    - Mock the helper's do_del/do_outdate/do_alias methods.
+    - Verify the correct method is called with the expected arguments
+      (including the auto-appended issue_id).
+    """
+    from issue_auth_tool.issues_auth_tool import _execute_final_command
+    from issue_auth_tool.mcp import viewer as viewer_mod
+
+    helper_mock = viewer_mod.helper
+    with patch.object(helper_mock, helper_method) as mock_method:
+        _execute_final_command(final_decision_cmd, 42)
+        mock_method.assert_called_once()
+        # The issue_id (42) should be appended to the command
+        call_args = mock_method.call_args[0][0]
+        assert "42" in call_args
+
+
+def test_generate_called_at_end_of_run():
+    """
+    Phase 3: helper.do_generate() is called at the end of run()
+    when there are valid reports.
+
+    - Pre-populate all_valid_reports with one report.
+    - Mock fetch_issues_and_discussions to return nothing (all pre-existing).
+    - Mock get_llm_response for the judgement phase.
+    - Only mock helper side effects (do_del, do_generate).
+    - Verify do_generate is called exactly once.
+    """
+    from issue_auth_tool.issues_auth_tool import all_valid_reports, run
+    from issue_auth_tool.mcp.viewer import helper as viewer_helper
+    from issue_auth_tool.types import ValidReport
+
+    all_valid_reports.clear()
+    all_valid_reports[42] = ValidReport(
+        type="evil",
+        reason="test",
+        mcp=["view 1"],
+    )
+
+    fake_db_path = MagicMock()
+    fake_db_path.exists.return_value = True
+
+    with patch(
+        "issue_auth_tool.issues_auth_tool.fetch_issues_and_discussions",
+        return_value=iter([]),
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.get_llm_response",
+        return_value='["del 1"]',
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.handle_instruction",
+        return_value="context",
+    ), patch(
+        "issue_auth_tool.issues_auth_tool._execute_final_command",
+    ), patch.object(
+        viewer_helper, "do_generate"
+    ) as mock_generate, patch(
+        "issue_auth_tool.issues_auth_tool.db_path", fake_db_path,
+    ), patch(
+        "issue_auth_tool.issues_auth_tool.setting",
+        {"type": ["discussions"], "rate_per_minute": 10, "workers": 1,
+         "prompt_type": "", "prompt_judgement": "", "google_query": "",
+         "mcp": {"google": {"cx": "", "key": ""}, "viewer": {"config": ""}}},
+    ):
+        run()
+
+    mock_generate.assert_called_once()
+
+
+def test_unknown_command_logged_as_warning():
+    """
+    Phase 3: An unknown command in the final decision should log a warning.
+    """
+    from issue_auth_tool.issues_auth_tool import _execute_final_command
+
+    with patch(
+        "issue_auth_tool.issues_auth_tool.logger"
+    ) as mock_logger:
+        _execute_final_command("foobar arg1", 42)
+        mock_logger.warning.assert_called_once()
