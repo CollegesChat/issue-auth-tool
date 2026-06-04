@@ -45,6 +45,7 @@ def _make_llm_type_response(
 # Phase 1: First type detection
 # ──────────────────────────────────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "llm_type,mcp,expect_in_reports",
     [
@@ -73,11 +74,14 @@ def test_first_type_detection(llm_type, mcp, expect_in_reports):
 
     llm_output = _make_llm_type_response(llm_type, f"test reason for {llm_type}", mcp)
 
-    with patch(
-        "issue_auth_tool.issues_auth_tool.get_llm_response", return_value=llm_output
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.db_path",
-        MagicMock(),
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response", return_value=llm_output
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.db_path",
+            MagicMock(),
+        ),
     ):
         process_post(TEST_POST, prompt_on_failure=True)
 
@@ -108,12 +112,15 @@ def test_first_type_detection_invalid_json_deferred():
         "text": "Some content.",
     }
 
-    with patch(
-        "issue_auth_tool.issues_auth_tool.get_llm_response",
-        return_value="not valid json!!!",
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.prompt_manual_fix",
-        return_value=None,
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value="not valid json!!!",
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.prompt_manual_fix",
+            return_value=None,
+        ),
     ):
         deferred = process_post(bad_post, prompt_on_failure=False)
         assert deferred is not None
@@ -124,6 +131,7 @@ def test_first_type_detection_invalid_json_deferred():
 # ──────────────────────────────────────────────────────────────
 # Phase 2: Second judgement verification
 # ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "judgement_output,expect_cmd_prefix",
@@ -162,15 +170,19 @@ def test_second_judgement(judgement_output, expect_cmd_prefix):
     def fake_execute(cmd: str, issue_id: int) -> None:
         executed_commands.append({"cmd": cmd, "issue_id": issue_id})
 
-    with patch(
-        "issue_auth_tool.issues_auth_tool.get_llm_response",
-        return_value=judgement_output,
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.handle_instruction",
-        return_value="fake mcp context result",
-    ), patch(
-        "issue_auth_tool.issues_auth_tool._execute_final_command",
-        side_effect=fake_execute,
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value=judgement_output,
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="fake mcp context result",
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool._execute_final_command",
+            side_effect=fake_execute,
+        ),
     ):
         process_report(42, all_valid_reports[42])
 
@@ -204,18 +216,21 @@ def test_second_judgement_invalid_output_logged():
     def fake_execute(cmd: str, issue_id: int) -> None:
         executed_commands.append({"cmd": cmd, "issue_id": issue_id})
 
-    with patch(
-        "issue_auth_tool.issues_auth_tool.get_llm_response",
-        return_value="this is not valid judgement",
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.handle_instruction",
-        return_value="some context",
-    ), patch(
-        "issue_auth_tool.issues_auth_tool._execute_final_command",
-        side_effect=fake_execute,
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.logger"
-    ) as mock_logger:
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value="this is not valid judgement",
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="some context",
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool._execute_final_command",
+            side_effect=fake_execute,
+        ),
+        patch("issue_auth_tool.issues_auth_tool.logger") as mock_logger,
+    ):
         process_report(42, all_valid_reports[42])
 
     assert len(executed_commands) == 0
@@ -225,6 +240,7 @@ def test_second_judgement_invalid_output_logged():
 # ──────────────────────────────────────────────────────────────
 # Phase 3: Command execution & generate flow
 # ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "final_decision_cmd,helper_method",
@@ -280,26 +296,39 @@ def test_generate_called_at_end_of_run():
     fake_db_path = MagicMock()
     fake_db_path.exists.return_value = True
 
-    with patch(
-        "issue_auth_tool.issues_auth_tool.fetch_issues_and_discussions",
-        return_value=iter([]),
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.get_llm_response",
-        return_value='["del 1"]',
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.handle_instruction",
-        return_value="context",
-    ), patch(
-        "issue_auth_tool.issues_auth_tool._execute_final_command",
-    ), patch.object(
-        viewer_helper, "do_generate"
-    ) as mock_generate, patch(
-        "issue_auth_tool.issues_auth_tool.db_path", fake_db_path,
-    ), patch(
-        "issue_auth_tool.issues_auth_tool.setting",
-        {"type": ["discussions"], "rate_per_minute": 10, "workers": 1,
-         "prompt_type": "", "prompt_judgement": "", "google_query": "",
-         "mcp": {"google": {"cx": "", "key": ""}, "viewer": {"config": ""}}},
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.fetch_issues_and_discussions",
+            return_value=iter([]),
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value='["del 1"]',
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="context",
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool._execute_final_command",
+        ),
+        patch.object(viewer_helper, "do_generate") as mock_generate,
+        patch(
+            "issue_auth_tool.issues_auth_tool.db_path",
+            fake_db_path,
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.setting",
+            {
+                "type": ["discussions"],
+                "rate_per_minute": 10,
+                "workers": 1,
+                "prompt_type": "",
+                "prompt_judgement": "",
+                "google_query": "",
+                "mcp": {"google": {"cx": "", "key": ""}, "viewer": {"config": ""}},
+            },
+        ),
     ):
         run()
 
@@ -312,8 +341,6 @@ def test_unknown_command_logged_as_warning():
     """
     from issue_auth_tool.issues_auth_tool import _execute_final_command
 
-    with patch(
-        "issue_auth_tool.issues_auth_tool.logger"
-    ) as mock_logger:
+    with patch("issue_auth_tool.issues_auth_tool.logger") as mock_logger:
         _execute_final_command("foobar arg1", 42)
         mock_logger.warning.assert_called_once()

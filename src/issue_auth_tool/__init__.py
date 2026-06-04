@@ -5,6 +5,7 @@ from rich.logging import RichHandler
 HAS_OBJPRINT = False
 try:
     from objprint import op
+
     HAS_OBJPRINT = True
 except ImportError:
     pass
@@ -19,13 +20,13 @@ class InspectLoggerAdapter(logging.LoggerAdapter):
 
 
 def setup_logger() -> logging.LoggerAdapter:
-    logger = logging.getLogger('IAT')
+    logger = logging.getLogger("IAT")
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     ch = RichHandler(
         rich_tracebacks=True, markup=True, show_time=False, show_path=False
     )
-    ch.setFormatter(logging.Formatter('%(message)s'))
+    ch.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(ch)
 
     return InspectLoggerAdapter(logger)

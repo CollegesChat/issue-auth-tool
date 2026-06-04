@@ -21,8 +21,8 @@ class FakeClock:
 
 def test_rate_limit_enforces_multiple_windows(monkeypatch):
     clock = FakeClock()
-    monkeypatch.setattr(utils.time, 'monotonic', clock.monotonic)
-    monkeypatch.setattr(utils.time, 'sleep', clock.sleep)
+    monkeypatch.setattr(utils.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(utils.time, "sleep", clock.sleep)
 
     call_times: list[float] = []
 
@@ -42,7 +42,7 @@ def test_rate_limit_waits_outside_lock_under_concurrency(monkeypatch):
     sleep_lock = threading.Lock()
     sleep_calls: list[float] = []
 
-    monkeypatch.setattr(utils.time, 'monotonic', lambda: 100.0)
+    monkeypatch.setattr(utils.time, "monotonic", lambda: 100.0)
 
     def blocking_sleep(seconds: float) -> None:
         with sleep_lock:
@@ -51,7 +51,7 @@ def test_rate_limit_waits_outside_lock_under_concurrency(monkeypatch):
                 both_sleeping.set()
         assert release_sleep.wait(1)
 
-    monkeypatch.setattr(utils.time, 'sleep', blocking_sleep)
+    monkeypatch.setattr(utils.time, "sleep", blocking_sleep)
 
     start_barrier = threading.Barrier(3)
     results: list[int] = []

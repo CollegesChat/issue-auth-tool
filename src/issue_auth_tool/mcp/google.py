@@ -5,7 +5,7 @@ from issue_auth_tool import logger
 
 
 def google_search_snippets(query, api_key, cse_id, num=5):
-    service = build('customsearch', 'v1', developerKey=api_key)
+    service = build("customsearch", "v1", developerKey=api_key)
     try:
         res = (
             service.cse()
@@ -17,24 +17,24 @@ def google_search_snippets(query, api_key, cse_id, num=5):
             .execute()
         )
     except HttpError as e:
-        logger.error('请求出错： %s', e)
+        logger.error("请求出错： %s", e)
         return []
 
-    items = res.get('items', [])
+    items = res.get("items", [])
     results = []
     for item in items:
-        title = item.get('title')
-        link = item.get('link')
-        snippet = item.get('snippet')
-        results.append({'title': title, 'link': link, 'snippet': snippet})
+        title = item.get("title")
+        link = item.get("link")
+        snippet = item.get("snippet")
+        results.append({"title": title, "link": link, "snippet": snippet})
     return results
 
 
 def get_results(query: str, key: str, cse: str):  # 即 “cx”
     top5 = google_search_snippets(query, key, cse, num=5)
-    result = ''
+    result = ""
     for idx, r in enumerate(top5, start=1):
-        result += f"""第 {idx} 条:标题：{r['title']}
-链接：{r['link']}
-摘要：{r['snippet']}"""
+        result += f"""第 {idx} 条:标题：{r["title"]}
+链接：{r["link"]}
+摘要：{r["snippet"]}"""
     return result

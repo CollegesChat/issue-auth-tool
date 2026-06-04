@@ -24,23 +24,23 @@ from referencing.jsonschema import DRAFT7
 
 from .. import logger
 
-P = ParamSpec('P')
-R = TypeVar('R')
+P = ParamSpec("P")
+R = TypeVar("R")
 
 SRC = Path(__file__).parent.parent
+
+
 def load_regex(uri: str):
     # regex://username.regex → username.regex
-    key = uri.replace('regex://', '')
-    path = SRC / 'schema' / 'regex' / f'{key}'
-    with open(path, 'r', encoding='utf-8') as f:
-        return {'type': 'string', 'pattern': f.read().strip()}
+    key = uri.replace("regex://", "")
+    path = SRC / "schema" / "regex" / f"{key}"
+    with open(path, "r", encoding="utf-8") as f:
+        return {"type": "string", "pattern": f.read().strip()}
 
 
 def retrieve_schema(uri: str) -> Resource:
-    if uri.startswith('regex://'):
-        return Resource.from_contents(
-            load_regex(uri), default_specification=DRAFT7
-        )
+    if uri.startswith("regex://"):
+        return Resource.from_contents(load_regex(uri), default_specification=DRAFT7)
     raise NoSuchResource(ref=uri)
 
 
@@ -65,8 +65,8 @@ def validate(instance: object, schema: Any):
 
 
 SCHEMA: dict[str, dict] = {
-    'judgement': json.loads((SRC / 'schema' / 'judgement.schema.json').read_text()),
-    'type': json.loads((SRC / 'schema' / 'type.schema.json').read_text()),
+    "judgement": json.loads((SRC / "schema" / "judgement.schema.json").read_text()),
+    "type": json.loads((SRC / "schema" / "type.schema.json").read_text()),
 }
 
 
@@ -87,7 +87,7 @@ def edit_json(json_data: str, validator: dict) -> None | dict:
 
     kb = KeyBindings()
 
-    @kb.add('c-s')  # Ctrl-S 保存并退出，返回文本
+    @kb.add("c-s")  # Ctrl-S 保存并退出，返回文本
     def _(event):
         event.app.exit(result=text_area.text)
 
@@ -95,26 +95,30 @@ def edit_json(json_data: str, validator: dict) -> None | dict:
         try:
             parsed = json.loads(buf.text)
             validate(instance=parsed, schema=validator)
-            status_label.text = FormattedText([
-                ('fg:ansigreen', '状态：'),
-                ('fg:ansiwhite', 'JSON 语法正确'),
-            ])
+            status_label.text = FormattedText(
+                [
+                    ("fg:ansigreen", "状态："),
+                    ("fg:ansiwhite", "JSON 语法正确"),
+                ]
+            )
         except Exception as ex:
             # 显示错误（红色），只显示简短信息以免太长
-            status_label.text = FormattedText([
-                ('fg:ansired', '状态：'),
-                ('fg:ansiwhite', f'JSON 错误: {repr(ex).replace(r"\\\\", "\\")}'),
-            ])
+            status_label.text = FormattedText(
+                [
+                    ("fg:ansired", "状态："),
+                    ("fg:ansiwhite", f"JSON 错误: {repr(ex).replace(r'\\\\', '\\')}"),
+                ]
+            )
 
     text_area.buffer.on_text_changed += on_text_changed
 
-    @kb.add('escape')  # Esc 取消
-    @kb.add('c-q')  # Ctrl-Q 取消
+    @kb.add("escape")  # Esc 取消
+    @kb.add("c-q")  # Ctrl-Q 取消
     def _(event):
         event.app.exit(result=None)
 
-    label = Label('按 Ctrl-S 保存并退出\n按 Esc 或 Ctrl-Q 取消编辑')
-    status_label = Label('')
+    label = Label("按 Ctrl-S 保存并退出\n按 Esc 或 Ctrl-Q 取消编辑")
+    status_label = Label("")
     on_text_changed(SimpleNamespace(text=json_data))
     root_container = HSplit([label, text_area, status_label], padding=0)
     app = Application(
@@ -138,7 +142,7 @@ def edit_json(json_data: str, validator: dict) -> None | dict:
         logger.error(formatter(e, edited))
         return None
     except json.JSONDecodeError as e:
-        logger.error(f'[red]JSON 解析错误:[/red] {e}')
+        logger.error(f"[red]JSON 解析错误:[/red] {e}")
         return None
 
 
@@ -188,9 +192,9 @@ def rate_limit(
                 insort(reservations, scheduled_at)
                 reservation_count = len(reservations)
 
-            func_name = getattr(func, '__name__', repr(func))
+            func_name = getattr(func, "__name__", repr(func))
             logger.debug(
-                'rate_limit[%s]: available_now=%s/%s scheduled_in=%.3fs reservations=%s',
+                "rate_limit[%s]: available_now=%s/%s scheduled_in=%.3fs reservations=%s",
                 func_name,
                 available_now,
                 max_calls,
@@ -209,7 +213,7 @@ def rate_limit(
                 except Exception as e:
                     msg = str(e)
                     # 简单识别 429 或 RESOURCE_EXHAUSTED
-                    if '429' in msg or 'RESOURCE_EXHAUSTED' in msg:
+                    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
                         time.sleep(1)
                         continue
                     raise

@@ -19,18 +19,18 @@ from . import logger
 from .settings import config
 from .utils.util import SCHEMA, edit_json, rate_limit, validate
 
-g = Github(auth=Auth.Token(config['secret']['GITHUB_TOKEN']))
-repo = g.get_repo(f'{config["secret"]["OWNER"]}/{config["secret"]["REPO_NAME"]}')
+g = Github(auth=Auth.Token(config["secret"]["GITHUB_TOKEN"]))
+repo = g.get_repo(f"{config['secret']['OWNER']}/{config['secret']['REPO_NAME']}")
 logger.debug(
-    '已加载配置: owner=%s repo=%s llm_model=%s',
-    config['secret']['OWNER'],
-    config['secret']['REPO_NAME'],
-    config['secret']['llm']['model'],
+    "已加载配置: owner=%s repo=%s llm_model=%s",
+    config["secret"]["OWNER"],
+    config["secret"]["REPO_NAME"],
+    config["secret"]["llm"]["model"],
 )
 client = OpenAI(
-    api_key=config['secret']['llm']['key'], base_url=config['secret']['llm']['server']
+    api_key=config["secret"]["llm"]["key"], base_url=config["secret"]["llm"]["server"]
 )
-setting = config['settings']
+setting = config["settings"]
 all_valid_reports: dict[int, ValidReport] = {}
 
 MARKDOWN_CLEANER = re.compile(
@@ -53,64 +53,64 @@ def strip_markdown(md):
     # 定義替換邏輯的函數
     def replace_func(match):
         # 提取鏈接文字、加粗文字或斜體文字
-        if match.group('link_text'):
-            return match.group('link_text')
-        if match.group('bold_text'):
-            return match.group('bold_text')
-        if match.group('italic_text'):
-            return match.group('italic_text')
+        if match.group("link_text"):
+            return match.group("link_text")
+        if match.group("bold_text"):
+            return match.group("bold_text")
+        if match.group("italic_text"):
+            return match.group("italic_text")
         # 其他匹配項（如代碼塊、圖片、標題號）直接刪除
-        return ''
+        return ""
 
     text = MARKDOWN_CLEANER.sub(replace_func, md)
 
-    text = re.sub(r'\n\s*\n', '\n', text)
+    text = re.sub(r"\n\s*\n", "\n", text)
     return text.strip()
 
 
 def fetch_issues_and_discussions(
     ignore_nums: Iterable[int] = (),
 ) -> Iterator[PostData]:
-    types = setting['type']
+    types = setting["type"]
     ignore: set[int] = set(ignore_nums)
-    logger.warning(f'忽略以下编号： {ignore}')
+    logger.warning(f"忽略以下编号： {ignore}")
     strip = strip_markdown
     repo_issues = repo.get_issues
     repo_discussions = repo.get_discussions
 
     def iter_issues():
-        for issue in repo_issues(state='open'):
+        for issue in repo_issues(state="open"):
             # 过滤 PR
-            if getattr(issue, 'pull_request', None):
+            if getattr(issue, "pull_request", None):
                 continue
             if issue.number in ignore:
                 continue
             yield {
-                'title': issue.title,
-                'num': issue.number,
-                'text': strip(issue.body or '(无内容)'),
+                "title": issue.title,
+                "num": issue.number,
+                "text": strip(issue.body or "(无内容)"),
             }
 
     def iter_discussions():
         for disc in repo_discussions(
-            discussion_graphql_schema='id number title body',  # TODO: 過濾指定id的討論
+            discussion_graphql_schema="id number title body",  # TODO: 過濾指定id的討論
             answered=False,
         ):
             if disc.number in ignore:
                 continue
             yield {
-                'title': disc.title,
-                'num': disc.number,
-                'text': strip(disc.body or '(无内容)')[:1024],
+                "title": disc.title,
+                "num": disc.number,
+                "text": strip(disc.body or "(无内容)")[:1024],
             }
 
     producers: list[tuple[str, Callable[[], Iterator[PostData]]]] = []
-    if 'issues' in types:
-        producers.append(('issues', iter_issues))
-    if 'discussions' in types:
-        producers.append(('discussions', iter_discussions))
+    if "issues" in types:
+        producers.append(("issues", iter_issues))
+    if "discussions" in types:
+        producers.append(("discussions", iter_discussions))
     logger.debug(
-        '抓取配置: types=%s fetch_worker(s)=%s',
+        "抓取配置: types=%s fetch_worker(s)=%s",
         types,
         [_[0] for _ in producers],
     )
@@ -121,21 +121,21 @@ def fetch_issues_and_discussions(
     post_queue: Queue[PostData | BaseException | None] = Queue()
 
     def produce_posts(source: str, iterator_factory: Callable[[], Iterator[PostData]]):
-        logger.debug('抓取线程启动: %s', source)
+        logger.debug("抓取线程启动: %s", source)
         try:
             for post in iterator_factory():
-                logger.debug('抓取到 %s #%s，准备入队', source, post['num'])
+                logger.debug("抓取到 %s #%s，准备入队", source, post["num"])
                 post_queue.put(post)
         except BaseException as exc:
-            logger.error('抓取 %s 失败: %s', source, exc)
+            logger.error("抓取 %s 失败: %s", source, exc)
             post_queue.put(exc)
         finally:
-            logger.debug('抓取线程结束: %s', source)
+            logger.debug("抓取线程结束: %s", source)
             post_queue.put(done)
 
     workers = [
         Thread(
-            target=produce_posts, args=(source, producer), name=f'fetch-{source}-{idx}'
+            target=produce_posts, args=(source, producer), name=f"fetch-{source}-{idx}"
         )
         for idx, (source, producer) in enumerate(producers, start=1)
     ]
@@ -153,7 +153,7 @@ def fetch_issues_and_discussions(
             if isinstance(item, BaseException):
                 errors.append(item)
                 continue
-            logger.debug('消费队列内容: #%s', item['num'])
+            logger.debug("消费队列内容: #%s", item["num"])
             yield item
     finally:
         for worker in workers:
@@ -171,19 +171,19 @@ def handle_instruction(instructions: list[str]) -> str:
     for instr in instructions:
         parts = shlex.split(instr)
         match parts[0]:
-            case 'google':
+            case "google":
                 results.append(
                     get_results(
                         parts[1],
-                        setting['mcp']['google']['key'],
-                        setting['mcp']['google']['cx'],
+                        setting["mcp"]["google"]["key"],
+                        setting["mcp"]["google"]["cx"],
                     )
                 )
-            case 'view':
+            case "view":
                 results.append(view(parts[1]))
             case _:
-                raise ValueError(f'未知指令: {parts[0]}')
-    return '\n\n---\n\n'.join(results)
+                raise ValueError(f"未知指令: {parts[0]}")
+    return "\n\n---\n\n".join(results)
 
 
 CONTENT = """
@@ -193,19 +193,18 @@ CONTENT = """
 """
 
 
-@rate_limit(setting['rate_per_minute'], 60)
+@rate_limit(setting["rate_per_minute"], 60)
 def get_llm_response(instructions: str, input: str) -> str:
-    model = config['secret']['llm']['model']
+    model = config["secret"]["llm"]["model"]
     extra: dict = {}
-    if model.startswith('qwen'):
-        extra['extra_body'] = {'enable_thinking': False}
+    if model.startswith("qwen"):
+        extra["extra_body"] = {"enable_thinking": False}
     ret = (
-        client.chat.completions
-        .create(
+        client.chat.completions.create(
             model=model,
             messages=[
-                {'role': 'system', 'content': instructions},
-                {'role': 'user', 'content': input},
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": input},
             ],
             **extra,
         )
@@ -218,7 +217,7 @@ def get_llm_response(instructions: str, input: str) -> str:
         raise ValueError
 
 
-db_path = Path(__file__).parent.parent / 'database'
+db_path = Path(__file__).parent.parent / "database"
 
 
 def build_editable_text(ret_text: str) -> str:
@@ -236,49 +235,49 @@ def prompt_manual_fix(deferred: DeferredPost) -> dict | None:
 \tn = 不修改不保存结果
 \ty = 修改后保存结果
 \ti = 忽略并保存结果""",
-        default='n',
-        choices=['n', 'y', 'i'],
+        default="n",
+        choices=["n", "y", "i"],
         case_sensitive=False,
     )
-    if answer == 'n':
+    if answer == "n":
         logger.error(
-            '编号 %s 解析失败且未人工修正。',
-            post['num'],
+            "编号 %s 解析失败且未人工修正。",
+            post["num"],
         )
         return None
-    elif answer == 'i':
+    elif answer == "i":
         try:
             logger.warning(
-                '编号 %s 解析失败且将保存。',
-                post['num'],
+                "编号 %s 解析失败且将保存。",
+                post["num"],
             )
             return loads(deferred.ret_text)
         except JSONDecodeError:
             logger.error(
-                '编号 %s JSON解析失败，无法报错。',
-                post['num'],
+                "编号 %s JSON解析失败，无法报错。",
+                post["num"],
             )
             return None
     editable = build_editable_text(deferred.ret_text)
-    corrected = edit_json(editable, SCHEMA['type'])
+    corrected = edit_json(editable, SCHEMA["type"])
     if corrected is None:
-        logger.error('编号 %s 解析失败。', post['num'])
+        logger.error("编号 %s 解析失败。", post["num"])
         return None
 
-    corrected |= {'num': post['num']}
-    logger.info('修正后的数据： %s', corrected)
+    corrected |= {"num": post["num"]}
+    logger.info("修正后的数据： %s", corrected)
     return corrected
 
 
 def save_post_output(post: PostData, output: dict) -> None:
     with suppress(FileExistsError):
         with open(
-            db_path / f'{post["num"]}.json',
-            'x',
-            encoding='utf-8',
+            db_path / f"{post['num']}.json",
+            "x",
+            encoding="utf-8",
         ) as f:
             f.write(dumps(output, ensure_ascii=False, indent=2))
-            logger.info('已保存编号 %s 的结果。', post['num'])
+            logger.info("已保存编号 %s 的结果。", post["num"])
 
 
 def process_post(
@@ -291,18 +290,18 @@ def process_post(
     failure = deferred_failure
 
     if failure is None:
-        ret_text: str = ''
+        ret_text: str = ""
         try:
-            logger.debug('开始处理帖子: #%s %s', post['num'], post['title'])
-            ret_text = get_llm_response(setting['prompt_type'], CONTENT.format(**post))
+            logger.debug("开始处理帖子: #%s %s", post["num"], post["title"])
+            ret_text = get_llm_response(setting["prompt_type"], CONTENT.format(**post))
 
-            logger.debug('LLM 原始输出: #%s %s', post['num'], ret_text)
+            logger.debug("LLM 原始输出: #%s %s", post["num"], ret_text)
             result: dict = cast(dict, loads(ret_text))
-            validate(instance=result, schema=SCHEMA['type'])
+            validate(instance=result, schema=SCHEMA["type"])
             logger.debug(
-                'LLM 输出校验通过: #%s type=%s', post['num'], result.get('type')
+                "LLM 输出校验通过: #%s type=%s", post["num"], result.get("type")
             )
-            result |= {'num': post['num']}
+            result |= {"num": post["num"]}
             output = result
         except (JSONDecodeError, ValidationError):
             failure = DeferredPost(
@@ -310,7 +309,7 @@ def process_post(
                 ret_text=ret_text,
             )
             if not prompt_on_failure:
-                logger.warning('编号 %s 解析失败，已推迟到最后串行处理。', post['num'])
+                logger.warning("编号 %s 解析失败，已推迟到最后串行处理。", post["num"])
                 return failure
 
     if failure is not None:
@@ -319,9 +318,9 @@ def process_post(
             return None
 
     save_post_output(post, output)  # type: ignore
-    if output is not None and output['type'] != 'invalid':
-        all_valid_reports[post['num']] = ValidReport(
-            mcp=output['mcp'], reason=output['reason'], type=output['type']
+    if output is not None and output["type"] != "invalid":
+        all_valid_reports[post["num"]] = ValidReport(
+            mcp=output["mcp"], reason=output["reason"], type=output["type"]
         )
 
 
@@ -334,59 +333,67 @@ def _execute_final_command(cmd: str, issue_id: int) -> None:
         return
 
     match parts[0]:
-        case 'del':
+        case "del":
             # del ID [issueId...]
-            helper.do_del(f'{parts[1]} {issue_id}')
-        case 'outdate':
+            helper.do_del(f"{parts[1]} {issue_id}")
+        case "outdate":
             # outdate ID [issueId...]
-            helper.do_outdate(f'{parts[1]} {issue_id}')
-        case 'alias':
+            helper.do_outdate(f"{parts[1]} {issue_id}")
+        case "alias":
             # alias oldName newName [issueId...]
-            helper.do_alias(f'{parts[1]} {parts[2]} {issue_id}')
+            helper.do_alias(f"{parts[1]} {parts[2]} {issue_id}")
         case _:
-            logger.warning('未知的最终决策指令: %s', parts[0])
+            logger.warning("未知的最终决策指令: %s", parts[0])
 
 
 def process_report(num: int, report: ValidReport) -> None:
     # Step 3: 执行 MCP 指令获取上下文信息
-    logger.info('开始处理报告 #%s: type=%s reason=%s mcp=%s',
-                num, report['type'], report['reason'], report['mcp'])
-    mcp_context = handle_instruction(report['mcp'])
-    logger.debug('MCP 执行结果: %s', mcp_context)
+    logger.info(
+        "开始处理报告 #%s: type=%s reason=%s mcp=%s",
+        num,
+        report["type"],
+        report["reason"],
+        report["mcp"],
+    )
+    mcp_context = handle_instruction(report["mcp"])
+    logger.debug("MCP 执行结果: %s", mcp_context)
 
     # Step 4: 合并信息，发送 LLM 做二次判定
     judgement_input = (
-        setting['prompt_judgement'].format(
-            type=report['type'],
-            reasons=report['reason'],
+        setting["prompt_judgement"].format(
+            type=report["type"],
+            reasons=report["reason"],
         )
-        + f'\n\nMCP 获取的补充信息：\n{mcp_context}'
+        + f"\n\nMCP 获取的补充信息：\n{mcp_context}"
     )
-    ret_text = get_llm_response(judgement_input, '')
+    ret_text = get_llm_response(judgement_input, "")
 
     # 解析并验证输出
     try:
         result = loads(ret_text)
-        validate(instance=result, schema=SCHEMA['judgement'])
+        validate(instance=result, schema=SCHEMA["judgement"])
     except (JSONDecodeError, ValidationError) as e:
         logger.error(
-            '二次判定输出无效 #%s (type=%s): %s\n原始输出: %s',
-            num, report['type'], e, ret_text
+            "二次判定输出无效 #%s (type=%s): %s\n原始输出: %s",
+            num,
+            report["type"],
+            e,
+            ret_text,
         )
         return
 
     # Step 5: 执行最终决策或标记为无需处理
     if result is None:
-        logger.info('二次判定结果: 无需处理 #%s (type=%s)', num, report['type'])
+        logger.info("二次判定结果: 无需处理 #%s (type=%s)", num, report["type"])
     else:
         for cmd in result:
-            logger.info('最终决策 #%s: %s', num, cmd)
+            logger.info("最终决策 #%s: %s", num, cmd)
             _execute_final_command(cmd, num)
 
 
 def run():
-    worker_count = setting.get('workers', 4)
-    logger.debug('帖子处理 worker_count=%s', worker_count)
+    worker_count = setting.get("workers", 4)
+    logger.debug("帖子处理 worker_count=%s", worker_count)
 
     if not db_path.exists():
         db_path.mkdir(parents=True)
@@ -405,11 +412,11 @@ def run():
                 if deferred is not None:
                     deferred_posts.append(deferred)
             except BaseException as exc:
-                logger.error('处理帖子失败: %s', exc)
+                logger.error("处理帖子失败: %s", exc)
                 error_queue.append(exc)
 
     workers = [
-        Thread(target=consume_posts, name=f'process-post-{idx}')
+        Thread(target=consume_posts, name=f"process-post-{idx}")
         for idx in range(1, worker_count + 1)
     ]
     for worker in workers:
@@ -417,7 +424,7 @@ def run():
 
     try:
         for post in fetch_issues_and_discussions(
-            (int(p.stem) for p in db_path.glob('*.json'))
+            (int(p.stem) for p in db_path.glob("*.json"))
         ):
             post_queue.put(post)
     finally:
@@ -427,33 +434,34 @@ def run():
             worker.join()
 
     if deferred_posts:
-        logger.info('开始串行处理 %s 个解析失败任务。', len(deferred_posts))
+        logger.info("开始串行处理 %s 个解析失败任务。", len(deferred_posts))
         for deferred in deferred_posts:
             try:
                 process_post(deferred.post, deferred_failure=deferred)
             except BaseException as exc:
-                logger.error('串行处理帖子失败: %s', exc)
+                logger.error("串行处理帖子失败: %s", exc)
                 error_queue.append(exc)
 
     # 处理所有有效报告的二次判定循环
     if all_valid_reports:
-        logger.info('开始处理 %s 个有效报告的二次判定。', len(all_valid_reports))
+        logger.info("开始处理 %s 个有效报告的二次判定。", len(all_valid_reports))
         for num, report in all_valid_reports.items():
             try:
                 process_report(num, report)
             except BaseException as exc:
-                logger.error('处理报告失败: %s', exc)
+                logger.error("处理报告失败: %s", exc)
                 error_queue.append(exc)
 
     # 生成 changelog
     if all_valid_reports:
         from .mcp.viewer import helper
+
         helper.do_generate()
 
-    logger.debug('可用報告：', obj=all_valid_reports)
+    logger.debug("可用報告：", obj=all_valid_reports)
     if error_queue:
         raise error_queue[0]
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run()
