@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict
 
 
+PostSource = Literal["issues", "discussions"]
+
+
 class LLMConfig(TypedDict):
     key: str
     server: str
@@ -48,6 +51,7 @@ class PostData(TypedDict):
     title: str
     num: int
     text: str
+    source: NotRequired[PostSource]
 
 
 @dataclass(slots=True)
@@ -60,3 +64,4 @@ class ValidReport(TypedDict):
     type: Literal["outdated", "evil", "alias"]
     reason: str
     mcp: list[str]
+    source: NotRequired[PostSource]

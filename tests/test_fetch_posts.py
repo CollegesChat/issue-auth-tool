@@ -237,6 +237,37 @@ def test_second_judgement_invalid_output_logged():
     assert mock_logger.error.called
 
 
+def test_evil_issue_labeled_after_confirmed_judgement():
+    """
+    Phase 2: Confirmed evil issue reports should receive the evil-data label.
+    """
+    from issue_auth_tool.issues_auth_tool import process_report
+    from issue_auth_tool.types import ValidReport
+
+    report = ValidReport(
+        type="evil",
+        reason="malicious content detected",
+        mcp=["view 1234"],
+        source="issues",
+    )
+
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value='["del 1"]',
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="fake mcp context result",
+        ),
+        patch("issue_auth_tool.issues_auth_tool._execute_final_command"),
+        patch("issue_auth_tool.issues_auth_tool.label_evil_issue") as mock_label,
+    ):
+        process_report(42, report)
+
+    mock_label.assert_called_once_with(42)
+
+
 # ──────────────────────────────────────────────────────────────
 # Phase 3: Command execution & generate flow
 # ──────────────────────────────────────────────────────────────

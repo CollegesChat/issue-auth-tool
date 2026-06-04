@@ -32,6 +32,7 @@ client = OpenAI(
 )
 setting = config["settings"]
 all_valid_reports: dict[int, ValidReport] = {}
+EVIL_ISSUE_LABEL = "evil-data"
 
 MARKDOWN_CLEANER = re.compile(
     r"""
@@ -89,6 +90,7 @@ def fetch_issues_and_discussions(
                 "title": issue.title,
                 "num": issue.number,
                 "text": strip(issue.body or "(无内容)"),
+                "source": "issues",
             }
 
     def iter_discussions():
@@ -102,6 +104,7 @@ def fetch_issues_and_discussions(
                 "title": disc.title,
                 "num": disc.number,
                 "text": strip(disc.body or "(无内容)")[:1024],
+                "source": "discussions",
             }
 
     producers: list[tuple[str, Callable[[], Iterator[PostData]]]] = []
@@ -319,9 +322,22 @@ def process_post(
 
     save_post_output(post, output)
     if output is not None and output["type"] != "invalid":
-        all_valid_reports[post["num"]] = ValidReport(
+        report = ValidReport(
             mcp=output["mcp"], reason=output["reason"], type=output["type"]
         )
+        if "source" in post:
+            report["source"] = post["source"]
+        all_valid_reports[post["num"]] = report
+
+
+def label_evil_issue(issue_id: int, label: str = EVIL_ISSUE_LABEL) -> None:
+    issue = repo.get_issue(number=issue_id)
+    existing_labels = {getattr(item, "name", str(item)) for item in issue.labels}
+    if label in existing_labels:
+        logger.info(f"Issue #{issue_id} 已存在标签 {label}，跳过。")
+        return
+    issue.add_to_labels(label)
+    logger.info(f"已为恶意数据反馈 Issue #{issue_id} 添加标签 {label}。")
 
 
 def _execute_final_command(cmd: str, issue_id: int) -> None:
@@ -386,6 +402,8 @@ def process_report(num: int, report: ValidReport) -> None:
     if result is None:
         logger.info("二次判定结果: 无需处理 #%s (type=%s)", num, report["type"])
     else:
+        if report["type"] == "evil" and report.get("source") == "issues":
+            label_evil_issue(num)
         for cmd in result:
             logger.info("最终决策 #%s: %s", num, cmd)
             _execute_final_command(cmd, num)
