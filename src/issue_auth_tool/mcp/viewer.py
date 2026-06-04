@@ -1,6 +1,6 @@
 from uniinfo_editor import UniInfoTUI
 
-from ..issues_auth_tool import setting
+from ..settings import setting
 
 helper = UniInfoTUI()
 helper.do_load(setting["mcp"]["viewer"]["config"])

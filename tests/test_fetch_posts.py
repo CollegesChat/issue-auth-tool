@@ -13,6 +13,7 @@ Testing strategy:
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -86,13 +87,58 @@ def test_first_type_detection(llm_type, mcp, expect_in_reports):
         process_post(TEST_POST, prompt_on_failure=True)
 
     if expect_in_reports:
-        assert 42 in all_valid_reports
-        report = all_valid_reports[42]
+        assert "unknown-42" in all_valid_reports
+        report = all_valid_reports["unknown-42"]
         assert report["type"] == llm_type
         assert report["reason"] == f"test reason for {llm_type}"
         assert report["mcp"] == mcp
     else:
-        assert 42 not in all_valid_reports
+        assert "unknown-42" not in all_valid_reports
+
+
+def test_source_aware_reports_do_not_overwrite_same_number():
+    """
+    Phase 1: Issue and discussion reports with the same number use different keys.
+    """
+    from issue_auth_tool.issues_auth_tool import all_valid_reports, process_post
+
+    all_valid_reports.clear()
+    llm_output = _make_llm_type_response("evil", "same number", ["view 1"])
+    issue_post = PostData(title="Issue", num=42, text="bad data", source="issues")
+    discussion_post = PostData(
+        title="Discussion", num=42, text="bad data", source="discussions"
+    )
+
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value=llm_output,
+        ),
+        patch("issue_auth_tool.issues_auth_tool.save_post_output"),
+    ):
+        process_post(issue_post, prompt_on_failure=True)
+        process_post(discussion_post, prompt_on_failure=True)
+
+    assert set(all_valid_reports) == {"issues-42", "discussions-42"}
+    assert all_valid_reports["issues-42"]["source"] == "issues"
+    assert all_valid_reports["discussions-42"]["source"] == "discussions"
+
+
+def test_processed_post_keys_support_new_and_legacy_database_names():
+    """
+    Phase 1: New source-aware files are exact; legacy numeric files skip both sources.
+    """
+    from issue_auth_tool.issues_auth_tool import parse_processed_post_keys
+
+    keys = parse_processed_post_keys(
+        [
+            Path("database/issues-1.json"),
+            Path("database/discussions-2.json"),
+            Path("database/42.json"),
+        ]
+    )
+
+    assert keys == {"issues-1", "discussions-2", "issues-42", "discussions-42"}
 
 
 def test_first_type_detection_invalid_json_deferred():
@@ -159,10 +205,11 @@ def test_second_judgement(judgement_output, expect_cmd_prefix):
     )
 
     all_valid_reports.clear()
-    all_valid_reports[42] = ValidReport(
+    all_valid_reports["issues-42"] = ValidReport(
         type="evil",
         reason="malicious content detected",
         mcp=["view 1234"],
+        source="issues",
     )
 
     executed_commands: list[dict] = []
@@ -184,7 +231,7 @@ def test_second_judgement(judgement_output, expect_cmd_prefix):
             side_effect=fake_execute,
         ),
     ):
-        process_report(42, all_valid_reports[42])
+        process_report("issues-42", all_valid_reports["issues-42"])
 
     if expect_cmd_prefix is not None:
         assert len(executed_commands) == 1
@@ -205,10 +252,11 @@ def test_second_judgement_invalid_output_logged():
     )
 
     all_valid_reports.clear()
-    all_valid_reports[42] = ValidReport(
+    all_valid_reports["issues-42"] = ValidReport(
         type="evil",
         reason="test",
         mcp=["view 1"],
+        source="issues",
     )
 
     executed_commands: list[dict] = []
@@ -231,7 +279,7 @@ def test_second_judgement_invalid_output_logged():
         ),
         patch("issue_auth_tool.issues_auth_tool.logger") as mock_logger,
     ):
-        process_report(42, all_valid_reports[42])
+        process_report("issues-42", all_valid_reports["issues-42"])
 
     assert len(executed_commands) == 0
     assert mock_logger.error.called
@@ -263,9 +311,63 @@ def test_evil_issue_labeled_after_confirmed_judgement():
         patch("issue_auth_tool.issues_auth_tool._execute_final_command"),
         patch("issue_auth_tool.issues_auth_tool.label_evil_issue") as mock_label,
     ):
-        process_report(42, report)
+        process_report("issues-42", report)
 
     mock_label.assert_called_once_with(42)
+
+
+def test_evil_discussion_is_not_labeled_after_confirmed_judgement():
+    """
+    Phase 2: Confirmed evil discussions should not receive issue labels.
+    """
+    from issue_auth_tool.issues_auth_tool import process_report
+
+    report = ValidReport(
+        type="evil",
+        reason="malicious content detected",
+        mcp=["view 1234"],
+        source="discussions",
+    )
+
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value='["del 1"]',
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="fake mcp context result",
+        ),
+        patch("issue_auth_tool.issues_auth_tool._execute_final_command"),
+        patch("issue_auth_tool.issues_auth_tool.label_evil_issue") as mock_label,
+    ):
+        process_report("discussions-42", report)
+
+    mock_label.assert_not_called()
+
+
+def test_label_issue_uses_configured_label_key():
+    """
+    Phase 2: issue labels should be reusable through arbitrary config keys.
+    """
+    from issue_auth_tool import issues_auth_tool
+
+    issue = MagicMock()
+    issue.labels = []
+    fake_repo = MagicMock()
+    fake_repo.get_issue.return_value = issue
+
+    with (
+        patch.object(issues_auth_tool, "repo", fake_repo),
+        patch.object(
+            issues_auth_tool,
+            "setting",
+            {**issues_auth_tool.setting, "labels": {"triage": "needs-triage"}},
+        ),
+    ):
+        issues_auth_tool.label_issue(42, "triage")
+
+    issue.add_to_labels.assert_called_once_with("needs-triage")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -302,6 +404,28 @@ def test_command_execution(final_decision_cmd, helper_method):
         assert "42" in call_args
 
 
+def test_dry_run_skips_final_command_mutations():
+    """
+    Phase 3: dry-run logs commands without mutating viewer data.
+    """
+    from issue_auth_tool import issues_auth_tool
+    from issue_auth_tool.mcp.viewer import helper as viewer_helper
+
+    with patch.object(
+        issues_auth_tool, "setting", {**issues_auth_tool.setting, "dry_run": True}
+    ):
+        with patch.object(viewer_helper, "do_del") as mock_del:
+            issues_auth_tool._execute_final_command("del 1", 42)
+        with patch.object(viewer_helper, "do_outdate") as mock_outdate:
+            issues_auth_tool._execute_final_command("outdate 北京大学", 42)
+        with patch.object(viewer_helper, "do_alias") as mock_alias:
+            issues_auth_tool._execute_final_command("alias 旧大学 新大学", 42)
+
+    mock_del.assert_not_called()
+    mock_outdate.assert_not_called()
+    mock_alias.assert_not_called()
+
+
 def test_generate_called_at_end_of_run():
     """
     Phase 3: helper.do_generate() is called at the end of run()
@@ -318,10 +442,11 @@ def test_generate_called_at_end_of_run():
     from issue_auth_tool.types import ValidReport
 
     all_valid_reports.clear()
-    all_valid_reports[42] = ValidReport(
+    all_valid_reports["issues-42"] = ValidReport(
         type="evil",
         reason="test",
         mcp=["view 1"],
+        source="issues",
     )
 
     fake_db_path = MagicMock()
@@ -358,6 +483,8 @@ def test_generate_called_at_end_of_run():
                 "prompt_judgement": "",
                 "google_query": "",
                 "mcp": {"google": {"cx": "", "key": ""}, "viewer": {"config": ""}},
+                "dry_run": False,
+                "labels": {"evil": "evil-data"},
             },
         ),
     ):

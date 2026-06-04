@@ -13,7 +13,13 @@ from jsonschema import ValidationError
 from openai import OpenAI
 from rich.prompt import Prompt
 
-from issue_auth_tool.types import DeferredPost, PostData, ValidReport
+from issue_auth_tool.types import (
+    DeferredPost,
+    LLMPromptType,
+    PostData,
+    PostKey,
+    ValidReport,
+)
 
 from . import logger
 from .settings import config
@@ -31,8 +37,7 @@ client = OpenAI(
     api_key=config["secret"]["llm"]["key"], base_url=config["secret"]["llm"]["server"]
 )
 setting = config["settings"]
-all_valid_reports: dict[int, ValidReport] = {}
-EVIL_ISSUE_LABEL = "evil-data"
+all_valid_reports: dict[PostKey, ValidReport] = {}
 
 MARKDOWN_CLEANER = re.compile(
     r"""
@@ -69,11 +74,27 @@ def strip_markdown(md):
     return text.strip()
 
 
+def get_post_key(post: PostData) -> PostKey:
+    return f"{post.get('source', 'unknown')}-{post['num']}"
+
+
+def parse_processed_post_keys(paths: Iterable[Path]) -> set[PostKey]:
+    processed: set[PostKey] = set()
+    for path in paths:
+        stem = path.stem
+        if stem.isdigit():
+            processed.add(f"issues-{stem}")
+            processed.add(f"discussions-{stem}")
+        else:
+            processed.add(stem)
+    return processed
+
+
 def fetch_issues_and_discussions(
-    ignore_nums: Iterable[int] = (),
+    ignore_keys: Iterable[PostKey] = (),
 ) -> Iterator[PostData]:
     types = setting["type"]
-    ignore: set[int] = set(ignore_nums)
+    ignore: set[PostKey] = set(ignore_keys)
     logger.warning(f"忽略以下编号： {ignore}")
     strip = strip_markdown
     repo_issues = repo.get_issues
@@ -84,7 +105,7 @@ def fetch_issues_and_discussions(
             # 过滤 PR
             if getattr(issue, "pull_request", None):
                 continue
-            if issue.number in ignore:
+            if f"issues-{issue.number}" in ignore:
                 continue
             yield {
                 "title": issue.title,
@@ -98,7 +119,7 @@ def fetch_issues_and_discussions(
             discussion_graphql_schema="id number title body",  # TODO: 過濾指定id的討論
             answered=False,
         ):
-            if disc.number in ignore:
+            if f"discussions-{disc.number}" in ignore:
                 continue
             yield {
                 "title": disc.title,
@@ -275,7 +296,7 @@ def prompt_manual_fix(deferred: DeferredPost) -> dict | None:
 def save_post_output(post: PostData, output: dict) -> None:
     with suppress(FileExistsError):
         with open(
-            db_path / f"{post['num']}.json",
+            db_path / f"{get_post_key(post)}.json",
             "x",
             encoding="utf-8",
         ) as f:
@@ -327,17 +348,28 @@ def process_post(
         )
         if "source" in post:
             report["source"] = post["source"]
-        all_valid_reports[post["num"]] = report
+        all_valid_reports[get_post_key(post)] = report
 
 
-def label_evil_issue(issue_id: int, label: str = EVIL_ISSUE_LABEL) -> None:
+def is_dry_run() -> bool:
+    return setting.get("dry_run", False)
+
+
+def label_issue(issue_id: int, issue_type: str) -> None:
+    label = setting["labels"][issue_type]
+    if not label:
+        logger.info(f"Issue #{issue_id} 标签 {label} 已禁用，跳过。")
+        return
     issue = repo.get_issue(number=issue_id)
     existing_labels = {getattr(item, "name", str(item)) for item in issue.labels}
     if label in existing_labels:
         logger.info(f"Issue #{issue_id} 已存在标签 {label}，跳过。")
         return
+    if is_dry_run():
+        logger.info(f"[dry-run] 将为 Issue #{issue_id} 添加标签 {label}。")
+        return
     issue.add_to_labels(label)
-    logger.info(f"已为恶意数据反馈 Issue #{issue_id} 添加标签 {label}。")
+    logger.info(f"已为 Issue #{issue_id} 添加标签 {label}。")
 
 
 def _execute_final_command(cmd: str, issue_id: int) -> None:
@@ -351,18 +383,30 @@ def _execute_final_command(cmd: str, issue_id: int) -> None:
     match parts[0]:
         case "del":
             # del ID [issueId...]
+            if is_dry_run():
+                logger.info(f"[dry-run] 将执行最终决策: del {parts[1]} {issue_id}")
+                return
             helper.do_del(f"{parts[1]} {issue_id}")
         case "outdate":
             # outdate ID [issueId...]
+            if is_dry_run():
+                logger.info(f"[dry-run] 将执行最终决策: outdate {parts[1]} {issue_id}")
+                return
             helper.do_outdate(f"{parts[1]} {issue_id}")
         case "alias":
             # alias oldName newName [issueId...]
+            if is_dry_run():
+                logger.info(
+                    f"[dry-run] 将执行最终决策: alias {parts[1]} {parts[2]} {issue_id}"
+                )
+                return
             helper.do_alias(f"{parts[1]} {parts[2]} {issue_id}")
         case _:
             logger.warning("未知的最终决策指令: %s", parts[0])
 
 
-def process_report(num: int, report: ValidReport) -> None:
+def process_report(key: PostKey, report: ValidReport) -> None:
+    num = int(key.rsplit("-", 1)[1])
     # Step 3: 执行 MCP 指令获取上下文信息
     logger.info(
         "开始处理报告 #%s: type=%s reason=%s mcp=%s",
@@ -371,7 +415,11 @@ def process_report(num: int, report: ValidReport) -> None:
         report["reason"],
         report["mcp"],
     )
-    mcp_context = handle_instruction(report["mcp"])
+    try:
+        mcp_context = handle_instruction(report["mcp"])
+    except Exception as e:
+        logger.error("MCP 指令执行失败 #%s (type=%s): %s", num, report["type"], e)
+        return
     logger.debug("MCP 执行结果: %s", mcp_context)
 
     # Step 4: 合并信息，发送 LLM 做二次判定
@@ -386,7 +434,7 @@ def process_report(num: int, report: ValidReport) -> None:
 
     # 解析并验证输出
     try:
-        result = loads(ret_text)
+        result: LLMPromptType = loads(ret_text)
         validate(instance=result, schema=SCHEMA["judgement"])
     except (JSONDecodeError, ValidationError) as e:
         logger.error(
@@ -402,11 +450,13 @@ def process_report(num: int, report: ValidReport) -> None:
     if result is None:
         logger.info("二次判定结果: 无需处理 #%s (type=%s)", num, report["type"])
     else:
-        if report["type"] == "evil" and report.get("source") == "issues":
-            label_evil_issue(num)
+        label_issue(num, result["type"])
         for cmd in result:
             logger.info("最终决策 #%s: %s", num, cmd)
-            _execute_final_command(cmd, num)
+            try:
+                _execute_final_command(cmd, num)
+            except Exception as e:
+                logger.error("最终决策执行失败 #%s: %s", num, e)
 
 
 def run():
@@ -441,9 +491,8 @@ def run():
         worker.start()
 
     try:
-        for post in fetch_issues_and_discussions(
-            (int(p.stem) for p in db_path.glob("*.json"))
-        ):
+        processed_keys = parse_processed_post_keys(db_path.glob("*.json"))
+        for post in fetch_issues_and_discussions(processed_keys):
             post_queue.put(post)
     finally:
         for _ in workers:
@@ -474,7 +523,10 @@ def run():
     if all_valid_reports:
         from .mcp.viewer import helper
 
-        helper.do_generate()
+        if is_dry_run():
+            logger.info("[dry-run] 将生成 changelog。")
+        else:
+            helper.do_generate()
 
     logger.debug("可用報告：", obj=all_valid_reports)
     if error_queue:
