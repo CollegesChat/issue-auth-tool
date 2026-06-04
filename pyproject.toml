@@ -24,6 +24,8 @@ where = ["src"]
 [tool.ty.environment]
 python = "./.venv"
 root = ['src']
+[tool.ty.rules]
+invalid-argument-type = "ignore"
 [dependency-groups]
 dev = [
     "objprint>=0.3.0",

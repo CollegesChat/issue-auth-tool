@@ -317,7 +317,7 @@ def process_post(
         if output is None:
             return None
 
-    save_post_output(post, output)  # type: ignore
+    save_post_output(post, output)
     if output is not None and output["type"] != "invalid":
         all_valid_reports[post["num"]] = ValidReport(
             mcp=output["mcp"], reason=output["reason"], type=output["type"]
