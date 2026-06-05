@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict
 
-PostSource = Literal["issues", "discussions"]
-PostKey = str
+type PostSource = Literal["issues", "discussions"]
+type PostKey = str
 
 type MCPCommandName = Literal[
     "outdated", "evil", "alias"
-]  # TODO: see astral-sh/ty#3661
+]
 
 
 class LLMConfig(TypedDict):
@@ -76,12 +76,12 @@ class ValidReport(TypedDict):
     source: NotRequired[PostSource]
 
 
-class _LLMPromptType(TypedDict):
+class LLMPrompt(TypedDict):
     type: MCPCommandName
     reason: str
     mcp: list[str]
 
 
-type LLMPromptType = _LLMPromptType | None
+type LLMPromptType = LLMPrompt | None
 
 type LLMPromptJudgement = list[str] | None
