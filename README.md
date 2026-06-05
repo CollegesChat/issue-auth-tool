@@ -37,12 +37,12 @@
    - 将获取到的上下文信息与原始 Issue / Discussion 内容合并。
    - 将合并后的信息再次发送给 LLM，让其进行结果判定：
      - **若判定正确** → 输出最终决策（`del` / `outdate` / `alias`）。
-     - **若判定不正确** → 输出错误原因，并记录在结果中。
+     - **若判定不正确或无需处理** → 返回 `null`，不执行最终指令。
 
 5. **输出与结束**
    - 流程最终输出：
      - 一项确定的操作类型（`del` / `outdate` / `alias`）。
-     - 或不正确原因说明（当判定失败时）。
+     - 或 `null`（当判定失败或无需处理时）。
 
    - 之后流程结束。
 
@@ -62,7 +62,7 @@ flowchart TD
   Merge[将获取的信息与 issue 内容合并并发送给 LLM]
   Judge{LLM 判定：结果是否正确？}
   OutputDecision[输出：del / outdate / alias（任一）]
-  OutputReason[输出：不正确的理由]
+  OutputNull[输出：null / 无需处理]
   End([结束])
 
   Start --> DetectAndRequest
@@ -71,7 +71,7 @@ flowchart TD
   Validate -- 否 --> Pause --> Validate
   Validate -- 是 --> Execute --> Merge --> Judge
   Judge -- 对 --> OutputDecision --> End
-  Judge -- 不对 --> OutputReason --> End
+  Judge -- 不对 --> OutputNull --> End
 
 ```
 

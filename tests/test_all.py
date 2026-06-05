@@ -91,6 +91,3 @@ def test_json_schema_validation(test_name, schema, data, should_pass):
         # illegal 用例：应该验证失败
         with pytest.raises(ValidationError):
             schema_validate(instance=data, schema=schema)
-
-
-pytest.main([__file__])

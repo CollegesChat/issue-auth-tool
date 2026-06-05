@@ -48,7 +48,7 @@ class SettingConfig(TypedDict):
     prompt_judgement: str
     google_query: str
     mcp: MCPConfig
-    labels: NotRequired[LabelsConfig]
+    labels: LabelsConfig
 
 
 class AppConfig(TypedDict):

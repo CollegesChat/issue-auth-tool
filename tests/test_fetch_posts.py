@@ -31,6 +31,15 @@ TEST_POST: PostData = {
 }
 
 
+@pytest.fixture(autouse=True)
+def clear_processed_report_keys():
+    from issue_auth_tool.issues_auth_tool import processed_report_keys
+
+    processed_report_keys.clear()
+    yield
+    processed_report_keys.clear()
+
+
 def _make_llm_type_response(
     type_: str, reason: str = "test reason", mcp: list | None = None
 ) -> str:
@@ -230,6 +239,7 @@ def test_second_judgement(judgement_output, expect_cmd_prefix):
             "issue_auth_tool.issues_auth_tool._execute_final_command",
             side_effect=fake_execute,
         ),
+        patch("issue_auth_tool.issues_auth_tool.label_issue") as mock_label,
     ):
         process_report("issues-42", all_valid_reports["issues-42"])
 
@@ -237,8 +247,10 @@ def test_second_judgement(judgement_output, expect_cmd_prefix):
         assert len(executed_commands) == 1
         assert executed_commands[0]["issue_id"] == 42
         assert executed_commands[0]["cmd"].startswith(expect_cmd_prefix)
+        mock_label.assert_called_once_with(42, "evil")
     else:
         assert len(executed_commands) == 0
+        mock_label.assert_not_called()
 
 
 def test_second_judgement_invalid_output_logged():
@@ -309,11 +321,11 @@ def test_evil_issue_labeled_after_confirmed_judgement():
             return_value="fake mcp context result",
         ),
         patch("issue_auth_tool.issues_auth_tool._execute_final_command"),
-        patch("issue_auth_tool.issues_auth_tool.label_evil_issue") as mock_label,
+        patch("issue_auth_tool.issues_auth_tool.label_issue") as mock_label,
     ):
         process_report("issues-42", report)
 
-    mock_label.assert_called_once_with(42)
+    mock_label.assert_called_once_with(42, "evil")
 
 
 def test_evil_discussion_is_not_labeled_after_confirmed_judgement():
@@ -339,11 +351,85 @@ def test_evil_discussion_is_not_labeled_after_confirmed_judgement():
             return_value="fake mcp context result",
         ),
         patch("issue_auth_tool.issues_auth_tool._execute_final_command"),
-        patch("issue_auth_tool.issues_auth_tool.label_evil_issue") as mock_label,
+        patch("issue_auth_tool.issues_auth_tool.label_issue") as mock_label,
     ):
         process_report("discussions-42", report)
 
     mock_label.assert_not_called()
+
+
+def test_label_failure_does_not_stop_final_commands():
+    """
+    Phase 2: GitHub label failures are logged but final commands still execute.
+    """
+    from issue_auth_tool import issues_auth_tool
+    from issue_auth_tool.issues_auth_tool import process_report
+
+    report = ValidReport(
+        type="evil",
+        reason="malicious content detected",
+        mcp=["view 1234"],
+        source="issues",
+    )
+    fake_repo = MagicMock()
+    fake_repo.get_issue.side_effect = RuntimeError("permission denied")
+    executed_commands: list[str] = []
+
+    with (
+        patch.object(issues_auth_tool, "repo", fake_repo),
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value='["del 1"]',
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="fake mcp context result",
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool._execute_final_command",
+            side_effect=lambda cmd, issue_id: executed_commands.append(cmd),
+        ),
+        patch("issue_auth_tool.issues_auth_tool.logger") as mock_logger,
+    ):
+        process_report("issues-42", report)
+
+    assert executed_commands == ["del 1"]
+    assert mock_logger.error.called
+
+
+def test_process_report_skips_duplicate_key():
+    """
+    Phase 2: Re-processing the same report key should not repeat final commands.
+    """
+    from issue_auth_tool.issues_auth_tool import process_report
+
+    report = ValidReport(
+        type="evil",
+        reason="malicious content detected",
+        mcp=["view 1234"],
+        source="issues",
+    )
+    executed_commands: list[str] = []
+
+    with (
+        patch(
+            "issue_auth_tool.issues_auth_tool.get_llm_response",
+            return_value='["del 1"]',
+        ),
+        patch(
+            "issue_auth_tool.issues_auth_tool.handle_instruction",
+            return_value="fake mcp context result",
+        ),
+        patch("issue_auth_tool.issues_auth_tool.label_issue"),
+        patch(
+            "issue_auth_tool.issues_auth_tool._execute_final_command",
+            side_effect=lambda cmd, issue_id: executed_commands.append(cmd),
+        ),
+    ):
+        process_report("issues-42", report)
+        process_report("issues-42", report)
+
+    assert executed_commands == ["del 1"]
 
 
 def test_label_issue_uses_configured_label_key():

@@ -15,7 +15,7 @@ from rich.prompt import Prompt
 
 from issue_auth_tool.types import (
     DeferredPost,
-    LLMPromptType,
+    LLMPromptJudgement,
     PostData,
     PostKey,
     ValidReport,
@@ -38,6 +38,7 @@ client = OpenAI(
 )
 setting = config["settings"]
 all_valid_reports: dict[PostKey, ValidReport] = {}
+processed_report_keys: set[PostKey] = set()
 
 MARKDOWN_CLEANER = re.compile(
     r"""
@@ -356,20 +357,23 @@ def is_dry_run() -> bool:
 
 
 def label_issue(issue_id: int, issue_type: str) -> None:
-    label = setting["labels"][issue_type]
-    if not label:
-        logger.info(f"Issue #{issue_id} 标签 {label} 已禁用，跳过。")
-        return
-    issue = repo.get_issue(number=issue_id)
-    existing_labels = {getattr(item, "name", str(item)) for item in issue.labels}
-    if label in existing_labels:
-        logger.info(f"Issue #{issue_id} 已存在标签 {label}，跳过。")
-        return
-    if is_dry_run():
-        logger.info(f"[dry-run] 将为 Issue #{issue_id} 添加标签 {label}。")
-        return
-    issue.add_to_labels(label)
-    logger.info(f"已为 Issue #{issue_id} 添加标签 {label}。")
+    try:
+        label = setting["labels"][issue_type]
+        if not label:
+            logger.info(f"Issue #{issue_id} 的 {issue_type} 标签已禁用，跳过。")
+            return
+        issue = repo.get_issue(number=issue_id)
+        existing_labels = {getattr(item, "name", str(item)) for item in issue.labels}
+        if label in existing_labels:
+            logger.info(f"Issue #{issue_id} 已存在标签 {label}，跳过。")
+            return
+        if is_dry_run():
+            logger.info(f"[dry-run] 将为 Issue #{issue_id} 添加标签 {label}。")
+            return
+        issue.add_to_labels(label)
+        logger.info(f"已为 Issue #{issue_id} 添加标签 {label}。")
+    except Exception as e:
+        logger.error("为 Issue #%s 添加 %s 标签失败: %s", issue_id, issue_type, e)
 
 
 def _execute_final_command(cmd: str, issue_id: int) -> None:
@@ -406,6 +410,10 @@ def _execute_final_command(cmd: str, issue_id: int) -> None:
 
 
 def process_report(key: PostKey, report: ValidReport) -> None:
+    if key in processed_report_keys:
+        logger.info("报告 %s 已处理，跳过重复执行。", key)
+        return
+
     num = int(key.rsplit("-", 1)[1])
     # Step 3: 执行 MCP 指令获取上下文信息
     logger.info(
@@ -434,7 +442,7 @@ def process_report(key: PostKey, report: ValidReport) -> None:
 
     # 解析并验证输出
     try:
-        result: LLMPromptType = loads(ret_text)
+        result: LLMPromptJudgement = loads(ret_text)
         validate(instance=result, schema=SCHEMA["judgement"])
     except (JSONDecodeError, ValidationError) as e:
         logger.error(
@@ -450,13 +458,19 @@ def process_report(key: PostKey, report: ValidReport) -> None:
     if result is None:
         logger.info("二次判定结果: 无需处理 #%s (type=%s)", num, report["type"])
     else:
-        label_issue(num, result["type"])
+        processed_report_keys.add(key)
+        source = report.get("source")
+        if source == "issues" or (source is None and key.startswith("issues-")):
+            label_issue(num, report["type"])
         for cmd in result:
             logger.info("最终决策 #%s: %s", num, cmd)
             try:
                 _execute_final_command(cmd, num)
             except Exception as e:
                 logger.error("最终决策执行失败 #%s: %s", num, e)
+        return
+
+    processed_report_keys.add(key)
 
 
 def run():
