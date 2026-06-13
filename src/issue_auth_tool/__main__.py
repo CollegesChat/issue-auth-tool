@@ -13,16 +13,15 @@ from jsonschema import ValidationError
 from openai import OpenAI
 from rich.prompt import Prompt
 
-from issue_auth_tool.types import (
+from . import logger
+from .settings import config
+from .types import (
     DeferredPost,
     LLMPromptJudgement,
     PostData,
     PostKey,
     ValidReport,
 )
-
-from . import logger
-from .settings import config
 from .utils.util import SCHEMA, edit_json, rate_limit, validate
 
 g = Github(auth=Auth.Token(config["secret"]["GITHUB_TOKEN"]))
